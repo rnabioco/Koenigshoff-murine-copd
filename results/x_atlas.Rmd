@@ -1,0 +1,95 @@
+---
+title: "Reference lung cell types"
+author: "Kent Riemondy RBI"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libs, message=FALSE, warning=FALSE, echo=FALSE}
+source(here::here("R", "utils.R"))
+
+rmd_dir <- "atlas"
+
+obj_dir <- file.path(obj_dir, rmd_dir)
+
+walk(obj_dir, dir.create, showWarnings = FALSE, recursive = TRUE)
+
+seed_value <- 20200824
+```
+
+
+```{r}
+so_fn_ctrl <- file.path(obj_dir, "strunz_et_al_ctrl_so.rds")
+so_fn_all <- file.path(obj_dir, "strunz_et_al_all_so.rds")
+
+if(any(!file.exists(c(so_fn_ctrl, so_fn_all)))){
+  
+  mtx <- Matrix::readMM(gzcon(url("https://ftp.ncbi.nlm.nih.gov/geo/series/GSE141nnn/GSE141259/suppl/GSE141259_WholeLung_rawcounts.mtx.gz")))
+  rownames(mtx) <- readLines(gzcon(url("https://ftp.ncbi.nlm.nih.gov/geo/series/GSE141nnn/GSE141259/suppl/GSE141259_WholeLung_genes.txt.gz")))
+  colnames(mtx) <- readLines(gzcon(url("https://ftp.ncbi.nlm.nih.gov/geo/series/GSE141nnn/GSE141259/suppl/GSE141259_WholeLung_barcodes.txt.gz")))
+  
+  mdata <- read_csv("https://ftp.ncbi.nlm.nih.gov/geo/series/GSE141nnn/GSE141259/suppl/GSE141259_WholeLung_cellinfo.csv.gz") %>% 
+    dplyr::select(X1, id.orig.ident = orig.ident, identifier, res.2:spline_cluster) %>% 
+    column_to_rownames("X1") %>% 
+    as.data.frame()  
+  
+  so_whole_lung <- CreateSeuratObject(mtx, meta.data = mdata) %>% 
+    NormalizeData()
+  
+  mtx <- Matrix::readMM(gzcon(url("https://ftp.ncbi.nlm.nih.gov/geo/series/GSE141nnn/GSE141259/suppl/GSE141259_HighResolution_rawcounts.mtx.gz")))
+  rownames(mtx) <- readLines(gzcon(url("https://ftp.ncbi.nlm.nih.gov/geo/series/GSE141nnn/GSE141259/suppl/GSE141259_HighResolution_genes.txt.gz")))
+  colnames(mtx) <- readLines(gzcon(url("https://ftp.ncbi.nlm.nih.gov/geo/series/GSE141nnn/GSE141259/suppl/GSE141259_HighResolution_barcodes.txt.gz")))
+  
+  mdata <- read_csv("https://ftp.ncbi.nlm.nih.gov/geo/series/GSE141nnn/GSE141259/suppl/GSE141259_HighResolution_cellinfo.csv.gz") %>% 
+    dplyr::select(X1, sample, grouping) %>% 
+    column_to_rownames("X1") %>% 
+    as.data.frame()  
+  
+  so_high_res <- CreateSeuratObject(mtx, meta.data = mdata) %>% 
+    NormalizeData()
+  
+  # labels are missing for the hiRes data, only sample labels
+  # took scanpy oject ("hiRes.hdf5) and wrote meta data output (see lung_meta repo)
+  mdata <- read_csv(file.path(here("dbases", "strunz_et_al_scanpy_metadata.csv"))) %>% 
+    mutate(cell_id = str_c(sample_batch, index)) %>% 
+    dplyr::select(cell_id, 
+                  name, 
+                  grouping, 
+                  index,
+                  sample_batch,
+                  cell_type, 
+                  cell_type_res4, 
+                  cell_type_recombined) %>% 
+    column_to_rownames("cell_id") %>% 
+    .[intersect(rownames(.), colnames(so_high_res)), ]
+  
+  so_high_res <- AddMetaData(so_high_res, mdata)
+
+  so_whole_lung$cell_type <- so_whole_lung$cell.type
+  so_high_res$cell_type <- so_high_res$cell_type_recombined
+  so_whole_lung$treatment <- so_whole_lung$grouping
+  so_high_res$treatment <-  so_high_res$grouping
+  so_whole_lung$expt <- "whole_lung"
+  so_high_res$expt <- "epithelial"
+  
+  so <- merge(so_whole_lung, so_high_res)
+  ctrl_cells <- colnames(so)[str_detect(so$treatment, "PBS")]
+  so_ctrl <- subset(so, cells = ctrl_cells)
+  saveRDS(so_ctrl, so_fn_ctrl)
+  saveRDS(so, so_fn_all)
+}
+
+so_ctrl <- readRDS(so_fn_ctrl)
+```
+
+```{r}
+library(clustifyr)
+
+so_ctrl$ref_id <- str_c(so_ctrl$expt, "_", so_ctrl$cell_type)
+ctrl_reference <-object_ref(so_ctrl, "ref_id")
+
+saveRDS(ctrl_reference, file.path(obj_dir, "ctrl_reference.rds"))
+```
