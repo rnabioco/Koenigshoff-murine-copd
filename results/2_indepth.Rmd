@@ -1,0 +1,176 @@
+---
+title: "More detailed analysis"
+author: "Kent Riemondy RBI"
+date: "`r Sys.Date()`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "html") })
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+    theme: cosmo
+    highlight: tango
+    fig_caption: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(cache = FALSE)
+```
+
+
+```{r libs, message=FALSE, warning=FALSE, echo=FALSE}
+source(here::here("R", "utils.R"))
+
+walk(c(fig_dir, mkrs_dir, tbls_dir, obj_dir),
+     dir.create, showWarnings = F)
+
+seed_value <- 20200824
+```
+
+
+```{r}
+so <- qread(file.path(obj_dir, "so.qs"))
+```
+
+## Rename goblet to mucin club cells
+
+```{r}
+so$coarse_cell_type <- ifelse(so$coarse_cell_type == "goblet cells", 
+                              "mucin club cells",
+                              so$coarse_cell_type)
+
+so$cell_type_cluster <- ifelse(so$cell_type_cluster == "goblet cells (6)", 
+                              "mucin club cells (6)",
+                              so$cell_type_cluster)
+```
+## Differential expression between elastase and saline conditions
+
+```{r}
+clusters <- unique(so@meta.data$cell_type_cluster)
+treatment <- as.character(unique(so@meta.data$treatment))
+so_tmp <- so
+so_tmp$cluster_treatment <- str_c(so$treatment, "_", so$cell_type_cluster)
+
+de_res <- map(clusters, ~{
+    to_test <- str_c(treatment, "_", .x)
+    wilcoxauc(so_tmp, "cluster_treatment", groups_use = str_c(treatment, "_", .x)) %>% 
+      filter(group == to_test[1]) %>% 
+        arrange(desc(logFC))
+  })
+
+de_sig_res <- map(de_sig_res, ~filter(.x, padj < 0.05) %>% 
+                    arrange(desc(logFC)))
+names(de_sig_res) <- clusters
+
+de_res <- c(list(Description = scbp::presto_marker_description()), de_res)
+openxlsx::write.xlsx(de_res, file.path("tables", "Elastase_v_Saline_per_cell_type.xlsx"))
+
+de_sig_res <- c(list(Description = scbp::presto_marker_description()), de_sig_res)
+openxlsx::write.xlsx(de_sig_res, file.path("tables", "Elastase_v_Saline_per_cell_type_significant.xlsx"))
+```
+
+
+```{r}
+map(clusters, ~{
+  so_tmp <- subset(so, subset = cell_type_cluster == .x)
+  plot_cell_proportions(so_tmp,
+                        sample_id = "treatment",
+                        group_id =  "Phase", 
+                        cols =  palette_OkabeIto) +
+    labs(title = .x)
+})
+```
+
+# Various analyses requested
+
+```{r}
+umaps <- plot_umap(so, 
+          c("Muc5b", "Muc5ac"), 
+          group = "treatment")
+p <- plot_grid(plotlist = umaps, nrow = 2, ncol = 1)
+
+save_plot(file.path(fig_dir, "muc5ac_muc5b_umaps.pdf"), 
+          p, nrow = 2, ncol = 1, 
+          base_aspect_ratio = 1.75)
+p
+
+```
+
+```{r}
+vln <- plot_violins(so, 
+                    "cell_type_cluster", 
+                    split_by = "treatment",
+                    c("Muc5b", "Muc5ac")) + 
+  labs(x = "", y = "Expression")
+vln
+
+save_plot(file.path(fig_dir, "muc5ac_muc5b_vln_plots.pdf"), 
+          vln,
+          base_height = 5,
+          base_aspect_ratio = 1.5)
+
+```
+
+```{r}
+so_club <- subset(so, subset = coarse_cell_type %in% c("club cells", "mucin club cells"))
+
+so_club <- FindNeighbors(so_club) %>% 
+  FindClusters(resolution = seq(0.1, 2, 0.1),
+                   random.seed = seed_value,
+                    verbose = FALSE)
+
+cluster_cols <- str_subset(colnames(so_club@meta.data), "RNA_snn.res")
+
+plot_umap(so_club, 
+          cluster_cols, 
+          label_text = TRUE, 
+          label_color = "black",
+          ggrepel_opts = list(force = 0)) 
+```
+
+```{r}
+plts <- plot_umap(so_club, 
+          c("RNA_snn_res.0.3",
+            "Muc5b",
+            "Muc5ac"),
+          group = "treatment",
+          pt_size = 1)
+
+p <- plot_grid(plotlist = plts, nrow = 3, ncol = 1)
+save_plot(file.path(fig_dir, "club_cells_reclustered.pdf"), 
+          p,
+          nrow = 3,
+          ncol = 1)
+p
+```
+
+```{r}
+library(ggridges)
+so_mucin <- subset(so_club, subset = coarse_cell_type == "mucin club cells")
+
+p <- get_metadata(so_mucin, c("Muc5b", "Muc5ac")) %>% 
+  ggplot(aes(Muc5b, treatment)) +
+    geom_density_ridges(aes(fill = treatment)) + 
+  scale_fill_manual(values = palette_OkabeIto) +
+  theme_ridges() +
+  theme(legend.position = "none")
+    
+p2 <- get_metadata(so_mucin, c("Muc5b", "Muc5ac")) %>% 
+  ggplot(aes(Muc5ac, treatment)) +
+    geom_density_ridges(aes(fill = treatment)) + 
+  scale_fill_manual(values = palette_OkabeIto) +
+  theme_ridges() +
+  theme(legend.position = "none")
+
+p <- plot_grid(p, p2, nrow = 2)
+save_plot(file.path(fig_dir, "club_cells_muc5b_muc5ac.pdf"), 
+          p,
+          nrow = 2,
+          ncol = 1,
+          base_asp = 1.4)
+p
+```

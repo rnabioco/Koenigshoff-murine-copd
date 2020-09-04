@@ -789,17 +789,17 @@ save_plot(file.path(fig_dir, "cell_cycle_proportions.pdf"),
 p
 ```
 
-## UCC cellbrowser
+## UCSC cellbrowser
 
 An interactive UCSC cellbrowser has been generated with this dataset. The browser can be accessed at the following link:
 
 [club-cell-regeneration browser](https://dys1xs8fluqmw.cloudfront.net)
 
-Login credientials will be supplied separately. 
+Login credentials will be supplied separately. 
 
 ## Save data analysis
 
-```{r} 
+```{r, eval = FALSE} 
 qsave(so, file.path(obj_dir, "so.qs"), nthreads = 4)
 
 mdata_out <- get_metadata(so)
@@ -810,5 +810,4 @@ outname <- file.path("tables",
 write_tsv(mdata_out, outname)
 
 ```
-
 
