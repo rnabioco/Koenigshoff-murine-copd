@@ -118,15 +118,30 @@ save_plot(file.path(fig_dir, "muc5ac_muc5b_vln_plots.pdf"),
 ```{r}
 so_club <- subset(so, subset = coarse_cell_type %in% c("club cells", "mucin club cells"))
 
-so_club <- FindNeighbors(so_club) %>% 
-  FindClusters(resolution = seq(0.1, 2, 0.1),
-                   random.seed = seed_value,
-                    verbose = FALSE)
+so_club <- FindVariableFeatures(so_club) %>% 
+  ScaleData(.) %>% 
+  RunPCA(.) %>% 
+  FindNeighbors(., 
+                reduction = "pca", 
+                dims = 1:10, 
+                k.param = 10L, 
+                verbose = FALSE) %>% 
+  FindClusters(.,
+               resolution = seq(0.1, 2, 0.1),
+               random.seed = seed_value,
+               verbose = FALSE) %>% 
+  RunUMAP(., 
+          dims = 1:10,
+          n.neighbors = 10L,
+          min.dist = 0.5, 
+          seed.use = seed_value,
+          verbose = FALSE)
 
 cluster_cols <- str_subset(colnames(so_club@meta.data), "RNA_snn.res")
 
 plot_umap(so_club, 
           cluster_cols, 
+          pt_size = 1,
           label_text = TRUE, 
           label_color = "black",
           ggrepel_opts = list(force = 0)) 
@@ -174,3 +189,143 @@ save_plot(file.path(fig_dir, "club_cells_muc5b_muc5ac.pdf"),
           base_asp = 1.4)
 p
 ```
+
+
+## correlated genes to mucin genes
+
+```{r}
+
+to_check <- c("Retnla",
+  "Pigr",
+  "Sec14l3",
+  "Ahnak",
+  "Sfn",
+  "Fcgbp",
+  "Krt8",
+  "Muc5b",
+  "Muc5ac")
+
+
+dat <- get_metadata(so_mucin, to_check, embedding = NULL) %>% 
+  select(treatment, Retnla:Muc5ac) %>% 
+  mutate(treatment = factor(treatment, levels = c("Saline", "Elastase")))
+
+elast <- filter(dat, treatment == "Elastase")
+saline <- filter(dat, treatment == "Saline")
+
+plts <- map(to_check[1:7], ~{
+  
+  bplot <- ggplot(dat, aes_string("treatment", .x)) +
+    geom_boxplot(aes(fill = treatment)) +
+    geom_jitter() +
+    scale_fill_manual(values = palette_OkabeIto) +
+    labs(x = "") +
+    theme(legend.position = "none")
+    
+  
+  splts <- map(c("Muc5b", "Muc5ac"),
+      function(x){
+        ecor <- cor(elast[[.x]], elast[[x]], method = "spearman")
+        scor <- cor(saline[[.x]], saline[[x]], method = "spearman")
+        
+        text_df <- tibble(
+          treatment = factor(c("Saline", "Elastase"),levels = c("Saline", "Elastase")),
+          pearson = str_c("r = ", signif(c(scor, ecor), 3))
+        )
+        p <- ggplot(dat, aes_string(.x, x)) +
+          geom_point(aes(color = treatment)) +
+          facet_wrap(~treatment) +
+          geom_text(data = text_df,
+                    aes(x = -Inf, y = -Inf, label = pearson),
+                    hjust   = -.5,
+                    vjust   = -20) +
+          scale_color_manual(values = palette_OkabeIto) +
+    theme(legend.position = "none")
+        p
+      })
+  plot_grid(plotlist = c(list(bplot), splts),
+            ncol = 3,
+            nrow = 1, rel_widths = c(0.2, 0.4, 0.4))
+})
+
+p <- plot_grid(plotlist = plts, 
+               nrow = length(plts),
+               ncol = 1)
+save_plot("cor_to_mucins.pdf", 
+          p,
+          base_asp = 3,
+          nrow = length(plts),
+          ncol = 1)
+p
+```
+
+Run for all genes
+
+
+```{r}
+to_check <- rownames(so_mucin)[rowSums(so_mucin@assays$RNA@data > 0 ) > 5]
+all_data <- get_metadata(so_mucin, to_check, embedding = NULL) %>% 
+  mutate(treatment = factor(treatment, levels = c("Saline", "Elastase")))
+
+elast <- filter(all_data, treatment == "Elastase")
+saline <- filter(all_data, treatment == "Saline")
+
+cor_values <- map_dfr(to_check, ~{
+  tibble(
+    gene = .x,
+    elastase_muc5b = cor(elast[[.x]], elast[["Muc5b"]], method = "spearman"),
+    saline_muc5b = cor(saline[[.x]], saline[["Muc5b"]], method = "spearman"),
+    elastase_muc5ac = cor(elast[[.x]], elast[["Muc5ac"]], method = "spearman"),
+    saline_muc5ac = cor(saline[[.x]], saline[["Muc5ac"]], method = "spearman"))
+  }) %>% 
+  arrange(desc(elastase_muc5b)) 
+
+
+plts <- map(cor_values$gene[2:11], ~{
+  
+  bplot <- ggplot(all_data, aes_string("treatment", .x)) +
+    geom_boxplot(aes(fill = treatment)) +
+    geom_jitter() +
+    scale_fill_manual(values = palette_OkabeIto) +
+    labs(x = "") +
+    theme(legend.position = "none")
+    
+  
+  splts <- map(c("Muc5b", "Muc5ac"),
+      function(x){
+        ecor <- cor(elast[[.x]], elast[[x]], method = "spearman")
+        scor <- cor(saline[[.x]], saline[[x]], method = "spearman")
+        
+        text_df <- tibble(
+          treatment = factor(c("Saline", "Elastase"),levels = c("Saline", "Elastase")),
+          pearson = str_c("r = ", signif(c(scor, ecor), 3))
+        )
+        p <- ggplot(all_data, aes_string(.x, x)) +
+          geom_point(aes(color = treatment)) +
+          facet_wrap(~treatment) +
+          geom_text(data = text_df,
+                    aes(x = -Inf, y = -Inf, label = pearson),
+                    hjust   = -.5,
+                    vjust   = -20) +
+          scale_color_manual(values = palette_OkabeIto) +
+    theme(legend.position = "none")
+        p
+      })
+  plot_grid(plotlist = c(list(bplot), splts),
+            ncol = 3,
+            nrow = 1, rel_widths = c(0.2, 0.4, 0.4))
+})
+
+p <- plot_grid(plotlist = plts, 
+               nrow = length(plts),
+               ncol = 1)
+save_plot("cor_to_mucins_unbiased.pdf", 
+          p,
+          base_asp = 3,
+          nrow = length(plts),
+          ncol = 1)
+p
+write_csv(cor_values, "mucin_correlation_values.csv")
+```
+
+
