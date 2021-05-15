@@ -4,7 +4,8 @@
 .Ruserdata
 data
 results/cellbrowser
-results/*_cache/
+results/*_cache
+results/*/*_cache
 *.pdf
 *.xlsx
 *.tsv

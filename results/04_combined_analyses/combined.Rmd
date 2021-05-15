@@ -1,0 +1,793 @@
+---
+title: "Combined analysis of expt 1 and 2"
+author: "Kent Riemondy RBI"
+date: "`r Sys.Date()`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "html") })
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+    theme: cosmo
+    highlight: tango
+    fig_caption: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = FALSE, 
+                      warning = FALSE,
+                      cache = TRUE)
+```
+
+
+```{r libs}
+source(here::here("R", "utils.R"))
+
+walk(c(fig_dir, mkrs_dir, tbls_dir, obj_dir),
+     dir.create, showWarnings = F)
+seed_value <- 20210413
+```
+
+# Goals
+
+To examine similarities between the first experiment (single samples per treatment) and most recent (april 2021) experiment with replicates. 
+
+```{r}
+sos <- c(
+  expt1 = "../01_tdtomato_egfp_expt1/objects/so.qs",
+  expt2 = "../03_tdtomato_egfp_expt2//objects/so.qs"
+)
+sos <- map(sos, qread)
+sos <- imap(sos, ~{
+  .x$expt <- .y
+  .x})
+
+so <- merge(sos[[1]], sos[[2]])
+rm(sos)
+```
+
+
+```{r}
+rename_cts <- c("Ciliated cells" = "Ciliated",
+                "goblet cells" = "Goblet",
+                "AT2 cells" = "AT2",
+                "club cells" = "Club",
+                "AT1 cells" = "AT1",
+                "At2 Cells" = "AT2",
+                "Ciliated Cells" = "Ciliated",
+                "Club Cells" = "Club",
+                "Dcs" = "DC",
+                "Activated Club Cells" = "Activated Club Cells" ,
+                "Am (Pbs)" = "A. macrophage",
+                "Goblet Cells" = "Goblet",
+                "T-Lymphocytes" = "T-Lymphocytes",
+                "Proliferation" = "Proliferation")
+
+so$coarse_cell_type <- rename_cts[as.character(so$coarse_cell_type)]
+
+rename_samples <- c("PPE" = "Elastase-1-1",
+                    "ctrl" = "Saline-1-1",
+                    "E1" = "Elastase-2-1",
+                    "E2" = "Elastase-2-2",
+                    "S1"= "Saline-2-1",
+                    "S2"= "Saline-2-2")
+so$sample <- rename_samples[as.character(so$sample)]
+so$sample <- factor(so$sample, levels = c("Saline-1-1",
+                                          "Saline-2-1",
+                                          "Saline-2-2",
+                                          "Elastase-1-1",
+                                          "Elastase-2-1",
+                                          "Elastase-2-2"))
+
+so$sample_by_treatment <- factor(so$sample, levels = c("Saline-1-1",
+                                                       "Elastase-1-1",
+                                                       "Saline-2-1",
+                                                       "Elastase-2-1",
+                                                       "Saline-2-2",
+                                                       "Elastase-2-2"))
+
+so$treatment_fct <- factor(so$treatment, levels = c("Saline", "Elastase"))
+```
+
+Drop replicate S-2-1, note that we will need to regenerate the UMAPs and clustering at a later date.  
+
+```{r}
+so <- subset(so, subset = orig.ident == "S1", invert = TRUE)
+so$sample <- droplevels(so$sample)
+so$sample_by_treatment <- droplevels(so$sample_by_treatment)
+```
+
+## Normalize and embed into 2D with UMAP
+
+```{r}
+opts <- list(
+  n_var = 2000,
+  ndims = 20,
+  k = 15,
+  min_dist = 0.3,
+  coarse_clustering = "RNA_snn_res.0.1",
+  refined_clustering = "RNA_snn_res.1"
+)
+transgenes <- c("tdtomato-sv40", "egfp-sv40")
+
+```
+
+For this dataset, first the two experiments will be merged, and processed without any batch correction. Then if needed, an integration algorithm will be applied to normalize differences across experiments. 
+
+The top `r opts$n_var` variable genes will be used for PCA. The top `r opts$ndims` PCs will be used to generate a UMAP projection (min_dist = `r opts$min_dist`) and to perform clustering at various resolutions. Two clustering settings will be used to capture broad or more refined clusters. 
+
+```{r, message=FALSE, warning=FALSE}
+so <- NormalizeData(so)
+
+so <- FindVariableFeatures(so,
+                           selection.method = "vst",
+                           nfeatures = opts$n_var,
+                           verbose = FALSE)
+
+# remove transgenes from variable features 
+var_info <- so@assays$RNA@meta.features
+var_genes <- rownames(var_info)
+var_info <- var_info[!var_genes %in% transgenes, ]
+var_info$vst.variable <- FALSE
+var_info[order(-var_info$vst.variance.standardized)[1:opts$n_var], ]$vst.variable <- TRUE
+so@assays$RNA@meta.features <- var_info
+so@assays$RNA@var.features <- rownames(var_info)[var_info$vst.variable]
+  
+so <- ScaleData(so, verbose = FALSE)
+
+so <- RunPCA(so, 
+             npcs = 40, 
+             verbose = FALSE, 
+             seed.use = seed_value)
+
+so <- FindNeighbors(so, 
+                    reduction = "pca", 
+                    dims = 1:opts$ndims, 
+                    k.param = opts$k, 
+                    verbose = FALSE)
+
+so <- RunUMAP(so, 
+              dims = 1:opts$ndims,
+              n.neighbors = opts$k,
+              min.dist = opts$min_dist, 
+              seed.use = seed_value,
+               verbose = FALSE)
+
+so <- FindClusters(so, 
+                   resolution = seq(0.1, 1, 0.1),
+                   random.seed = seed_value,
+                    verbose = FALSE)
+```
+
+
+
+### UMAPs
+
+```{r, fig.cap = "Umap of each sample, Saline-1-1 refers to the Saline treatment from experiment 1, sample 1. Saline-2-1 refers to the Saline treatment from experiment 2, sample 1, etc."}
+plot_umap(so, "sample",  .cols = palette_OkabeIto)
+```
+
+```{r}
+plot_umap(so, "coarse_cell_type",  legend_title = "")
+```
+
+```{r}
+plot_umap(so, "treatment_fct", group = "sample", .cols = palette_OkabeIto,
+          legend_title = "")
+```
+
+The two experiments do not overlap very well for the AT2 and ciliated cell populations, however the other populations appear more similar. Integration with Harmony will help remove these batch effects.
+
+
+### integrate with harmony
+
+I'll apply the harmony algorithm to attempt to correct batch differences across experiments. 
+
+```{r}
+library(harmony)
+set.seed(seed_value)
+so <- RunHarmony(so, 
+                 theta = 1, 
+                 group.by.vars = "expt", 
+                 dims = 1:opts$ndims)
+
+so <- RunUMAP(so, 
+              reduction = "harmony",
+              dims = 1:opts$ndims,
+              reduction.name = "harmony_umap",
+              seed.use = seed_value)
+
+so <- FindNeighbors(so, 
+                    reduction = "harmony", 
+                    dims = 1:opts$ndims, 
+                    k.param = opts$k, 
+                    verbose = FALSE)
+
+so <- FindClusters(so, 
+                   resolution = seq(0.2, 1, by = 0.2),
+                    verbose = FALSE,
+                   random.seed = seed_value)
+```
+
+
+### UMAPs
+
+```{r}
+plot_harmony(so, "sample",  .cols = palette_OkabeIto)
+```
+```{r}
+plot_harmony(so, "coarse_cell_type", group = "sample")
+```
+
+After harmony the experiments are now more comparable. However experiment specific cell types are not merged across experiments (e.g. Myeloid cells and lymphocytes).
+  
+### by harmonized cluster
+
+Next I'll recluster the data to match this new projection. 
+
+```{r, warning = FALSE, fig.height=9, fig.width=15, fig.cap = "Clustering at various resolution settings." }
+cluster_cols <- str_c("RNA_snn_res.", seq(0.2, 1, by = 0.2))
+
+plot_harmony(so, 
+          cluster_cols, 
+          label_text = TRUE, 
+          label_color = "black",
+          ggrepel_opts = list(force = 0)) %>% 
+  plot_grid(plotlist = .,
+            nrow = 2,
+            ncol = 3)
+```
+
+```{r}
+so$refined_harmony_clusters <- so@meta.data$RNA_snn_res.0.8
+Idents(so) <- "refined_harmony_clusters"
+```
+
+## Annotate cell types
+
+For simplicity I will re-annotate the cell types, then assign subclusters within each cell type.
+
+```{r, fig.width = 9, fig.height=9, fig.cap = "Heatmap of correlation coefficients between the refined clusters in our data and the reference cell types defined in the Strunz et al dataset.", message = FALSE}
+library(clustifyr)
+library(ComplexHeatmap)
+ref <- readRDS(here("results", "objects", "atlas", "ctrl_reference.rds"))
+
+res <- clustify(so, 
+                cluster_col = "refined_harmony_clusters",
+                query_genes = VariableFeatures(so),
+                ref_mat = ref, 
+                obj_out = FALSE,
+                compute_method = "pearson") 
+
+hm <- Heatmap(t(res),
+              col = viridis::magma(256),
+              row_title = "Cell types (Strunz et al)",
+              column_title_side = "bottom",
+              column_title = "clusters",
+              name = "Pearson")
+
+pdf(file.path(fig_dir, "cell_type_cor_heatmap.pdf"),
+    width = 9,
+    height = 9)
+draw(hm)
+a <- dev.off(); rm(a)
+
+hm
+```
+
+
+Using these reference datasets as a guide, each cluster will be assigned to the most correlated cell type in the reference.
+
+```{r, rows.print = 15, fig.cap = "Cell type assignment based on highest correlation values."}
+cor_to_call(res) %>% 
+  dplyr::rename(cell_type = type,
+         cor_val = r)
+```
+
+### Annotated cell types
+
+```{r fig.cap = "UMAP of annotated cell types ", message = FALSE}
+so <- clustify(so, 
+                cluster_col = "refined_harmony_clusters",
+                query_genes = VariableFeatures(so),
+                ref_mat = ref, 
+                obj_out = TRUE,
+                compute_method = "pearson") 
+so@meta.data$UMAP_1 <- NULL
+so@meta.data$UMAP_2 <- NULL
+so@meta.data$r <- NULL
+so@meta.data$harmony_coarse_cell_type <- so@meta.data$type
+so@meta.data$type <- NULL
+
+so@meta.data$harmony_coarse_cell_type <- str_split(so@meta.data$harmony_coarse_cell_type, "_") %>% 
+    map_chr(~.x[length(.x)]) %>% 
+  str_to_title()
+
+rename_cts <- c(rename_cts,
+  c("At1 Cells"  = "AT1",
+    "Other Activated Club Cells" = "Other Activated Club Cells"))
+  
+so@meta.data$harmony_coarse_cell_type <- rename_cts[so@meta.data$harmony_coarse_cell_type]
+
+p <- plot_harmony(so,
+  "harmony_coarse_cell_type",
+  group = "treatment",
+  legend_title = "",
+  .cols = discrete_palette_default
+)
+
+save_plot(file.path(fig_dir, "umap_of_harmony_annotated_cell_types.pdf"),
+          p,
+          base_asp = 2)
+p
+```
+
+## Subclusters
+
+```{r}
+so@meta.data$harmony_cell_type_cluster <- add_subcluster_ids(so, 
+                                                     "harmony_coarse_cell_type",
+                                                     "refined_harmony_clusters")
+p <- plot_harmony(so, "harmony_cell_type_cluster", 
+          group = "sample",
+          legend_title = "")
+
+save_plot(file.path(fig_dir, "umap_of_annotated_cell_types_with_clusters.pdf"),
+          p,
+          base_asp = 2)
+p
+```
+
+It appears that the `Saline-1-1` sample is more similar to the `Saline-2-2` sample, with the `Saline-2-1` sample being more abberant. The Elastase samples are largely similar across samples. 
+
+## Cell proportions
+
+
+```{r, fig.cap = "Cell type proportion per treatment"}
+props <- get_cell_count_matrix(so, "harmony_cell_type_cluster", "sample") %>% 
+  rownames_to_column("cell_type") %>% 
+  pivot_longer(cols = -cell_type) %>% 
+  group_by(name) %>% 
+  mutate(percent = 100 * (value / sum(value))) 
+
+p <- ggplot(props, aes(cell_type, percent)) +
+  geom_col(aes(fill = name), position = position_dodge()) +
+  scale_fill_manual(name = "",
+                    values = discrete_palette_default) +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1, vjust = 0.5)) +
+  labs(x = "",
+       y = "Percent of Cells")
+
+save_plot(file.path(fig_dir, "cell_proportions_per_treatment.pdf"), 
+          p, 
+          base_asp = 2)
+p
+```
+
+
+## Show original cluster labels
+
+The original cluster labels for each experiment are noted as `experiment-celltype` e.g. `expt1-AT2 cells (1)`
+
+```{r, fig.width=9, fig.height=3}
+so$og_cluster_labels <- str_c(so$expt, "-", so$cell_type_cluster)
+
+
+p <- plot_harmony(so, "og_cluster_labels", 
+          group = "expt",
+          legend_title = "")
+
+save_plot(file.path(fig_dir, "umap_of_original_cell_types_by_experiment.pdf"),
+          p,
+          base_asp = 2)
+p
+
+```
+
+
+
+Highlight cluster 3 and 8 from first experiment
+
+```{r, fig.width = 9, fig.height=4.5}
+tmp <- so
+tmp$highlight <- case_when(
+  tmp$og_cluster_labels %in% c("expt1-AT2 cells (3)", "expt1-AT2 cells (8)") ~ tmp$og_cluster_labels,
+  tmp$expt == "expt1" ~ NA_character_,
+  TRUE ~ tmp$og_cluster_labels,
+  )
+p <- plot_harmony(tmp, "highlight", 
+          group = "expt",
+          legend_title = "")
+
+save_plot(file.path(fig_dir, "umap_of_original_cell_types_by_experiment.pdf"),
+          p,
+          base_asp = 2)
+p
+
+rm(tmp); x <- gc(); rm(x)
+```
+
+The at2 cluster 3 population from expt1 overlaps with at2 clusters (6) and (4) . The proliferative cluster (8) from expt1 overlaps with cluster "Proliferation (1)" in expt2.
+
+```{r, fig.width = 6, fig.height=3}
+so$og_cluster_labels <- str_c(so$expt, "-", so$cell_type_cluster)
+
+
+p <- plot_harmony(so, "treatment_fct", 
+          group = "expt",
+          legend_title = "",
+          .cols = palette_OkabeIto)
+
+save_plot(file.path(fig_dir, "umap_of_treatment_by_experiment.pdf"),
+          p,
+          base_asp = 2)
+p
+
+```
+
+## Cell proportions excluding immune populations
+
+```{r, fig.cap = "Cell type proportion per treatment"}
+to_keep <- c("Ciliated",
+             "Goblet",
+             "AT2",
+             "Proliferation",
+             "Club",
+             "AT1",
+             "Other Activated Club Cells")
+props <-so %>% 
+  subset(subset = harmony_coarse_cell_type %in% to_keep) %>% 
+  get_cell_count_matrix(., "harmony_cell_type_cluster", "sample") %>% 
+  rownames_to_column("cell_type") %>% 
+  pivot_longer(cols = -cell_type) %>% 
+  group_by(name) %>% 
+  mutate(percent = 100 * (value / sum(value))) 
+
+p <- ggplot(props, aes(cell_type, percent)) +
+  geom_col(aes(fill = name), position = position_dodge()) +
+  scale_fill_manual(name = "",
+                    values = discrete_palette_default) +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1, vjust = 0.5)) +
+  labs(x = "",
+       y = "Percent of Cells")
+
+save_plot(file.path(fig_dir, "cell_proportions_per_treatment_no_immune.pdf"), 
+          p, 
+          base_asp = 2)
+p
+```
+
+## Compare expt 1 clusters to expt 2 
+
+I'll directly compare the expression profiles between the clusters in each experiment as an additional quality check. 
+
+```{r, fig.width = 7, fig.height = 7}
+library(clustifyr)
+expt1 <- subset(so, subset = expt == "expt1")
+expt2 <- subset(so, subset = expt == "expt2")
+
+Idents(expt1) <- "og_cluster_labels"
+expt1_cluster_avg <- log1p(AverageExpression(expt1)$RNA)
+rm(expt1); x <- gc(); rm(x)
+
+res <- clustify(expt2, 
+                ref = expt1_cluster_avg, 
+                cluster_col = "og_cluster_labels",
+                obj_out = FALSE)
+rm(expt2); x <- gc(); rm(x)
+
+hm <- Heatmap(res,
+              col = viridis::magma(256),
+              name = "Pearson")
+
+pdf(file.path(fig_dir, "cross_experiment_cell_type_cor_heatmap.pdf"),
+    width = 6,
+    height = 9)
+draw(hm)
+a <- dev.off(); rm(a)
+
+hm
+```
+
+## Selected genes
+
+
+### Transgenes
+```{r}
+transgenes <- c("tdtomato-sv40", "egfp-sv40")
+
+p <- plot_harmony(so, 
+                  transgenes, 
+                  group = "treatment_fct",
+                  sorted = "random")
+
+p <- plot_grid(plotlist = p, nrow = 2)
+
+save_plot(file.path(fig_dir, "umap_of_transgenes_by_treatment.pdf"),
+          p,
+          nrow = 2,
+          ncol = 2,
+          base_asp = 1.2)
+p
+```
+
+```{r, fig.height= 7 , fig.width= 7 }
+plot_violins(so, 
+             "harmony_cell_type_cluster", 
+             transgenes) +
+  labs(x = "",
+       fill = "")
+```
+
+```{r,fig.height= 7 , fig.width= 7 }
+plot_violins(so, 
+             "harmony_cell_type_cluster", 
+             transgenes, 
+             split_by = "sample_by_treatment") +
+  labs(x = "",
+       fill = "")
+```
+
+```{r}
+
+plot_violins(so, 
+             "harmony_cell_type_cluster", 
+             transgenes, 
+             split_by = "treatment_fct", 
+             cols = palette_OkabeIto) +
+  labs(x = "",
+       fill = "")
+```
+
+### Mucins
+```{r}
+mucins <- c("Muc5b", "Muc5ac")
+
+p <- plot_harmony(so, 
+                  mucins, 
+                  group = "treatment_fct",
+                  sorted = "random")
+
+p <- plot_grid(plotlist = p, nrow = 2)
+
+save_plot(file.path(fig_dir, "umap_of_mucins_by_treatment.pdf"),
+          p,
+          nrow = 2,
+          ncol = 2,
+          base_asp = 1.2)
+p
+```
+
+
+```{r, fig.height= 7 , fig.width= 7 }
+plot_violins(so, 
+             "harmony_cell_type_cluster", 
+             mucins) +
+  labs(x = "",
+       fill = "")
+```
+
+```{r, fig.height= 7 , fig.width= 7 }
+plot_violins(so, 
+             "harmony_cell_type_cluster", 
+             mucins, 
+             split_by = "sample_by_treatment") +
+  labs(x = "",
+       fill = "")
+```
+
+```{r}
+subset(so, subset = harmony_coarse_cell_type == "Goblet") %>% 
+  plot_violins(., 
+             "harmony_cell_type_cluster", 
+             mucins, 
+             split_by = "sample_by_treatment") +
+  labs(x = "",
+       fill = "")
+```
+
+```{r}
+plot_violins(so, 
+             "harmony_cell_type_cluster", 
+             mucins, 
+             split_by = "treatment_fct", 
+             cols = palette_OkabeIto) +
+  labs(x = "",
+       fill = "")
+```
+
+## Get markers for new cell population labels 
+
+```{r}
+mkrs <- get_marker_summaries(so, 
+                     "harmony_cell_type_cluster", 
+                     outdir = mkrs_dir, 
+                     min_pct = 10,
+                     prefix = "harmony_cell_type")
+
+topx <- mkrs$mkrs %>% 
+  filter(logFC > 0, padj < 0.05) %>% 
+  mutate(group = factor(group, levels = unique(so$harmony_cell_type_cluster))) %>% 
+  group_by(group) %>% 
+  arrange(padj, desc(logFC)) %>% 
+  dplyr::slice(1:10) 
+```
+
+Top 10 markers of each cell population in a table and heatmap.
+
+```{r, rows.print = 15, columns.print = 15}
+topx %>% 
+  select(feature, group) %>% 
+  group_by(group) %>% 
+  mutate(id = row_number()) %>% 
+  pivot_wider(names_from = "group", values_from = "feature") %>%
+  select(-id)
+```
+
+
+```{r, fig.width = 9, fig.height= 18, warning = FALSE, message = FALSE, fig.cap = "Heatmap of top markers of each cell type (and subcluster)"}
+topx_features <- topx %>% 
+  pull(feature)
+
+hm <- plot_heatmap(ScaleData(so, features =  topx_features),
+             topx_features, 
+             group = "harmony_cell_type_cluster",
+             average = TRUE,
+             hmap_options = list(column_names_rot = 90,
+                                 col = viridis::magma(256)))
+
+pdf(file.path(fig_dir,
+              "cell_types_refined_marker_heatmap.pdf"),
+    height = 18,
+    width = 9)
+draw(hm)
+a <- dev.off(); rm(a)
+
+hm
+```
+
+
+## Get markers excluding immune cells 
+
+```{r}
+to_keep <- c("Ciliated",
+             "Goblet",
+             "AT2",
+             "Proliferation",
+             "Club",
+             "AT1",
+             "Other Activated Club Cells")
+so_epi <- so %>% 
+  subset(subset = harmony_coarse_cell_type %in% to_keep) 
+
+mkrs <- get_marker_summaries(so_epi, 
+                     "harmony_cell_type_cluster", 
+                     outdir = mkrs_dir, 
+                     min_pct = 10,
+                     prefix = "harmony_cell_type_no_immune")
+
+topx <- mkrs$mkrs %>% 
+  filter(logFC > 0, padj < 0.05) %>% 
+  mutate(group = factor(group, levels = unique(so$harmony_cell_type_cluster))) %>% 
+  group_by(group) %>% 
+  arrange(padj, desc(logFC)) %>% 
+  dplyr::slice(1:10) 
+```
+
+Top 10 markers of each cell population in a table and heatmap.
+
+```{r, rows.print = 15, columns.print = 15}
+topx %>% 
+  select(feature, group) %>% 
+  group_by(group) %>% 
+  mutate(id = row_number()) %>% 
+  pivot_wider(names_from = "group", values_from = "feature") %>%
+  select(-id)
+```
+
+
+```{r, fig.width = 9, fig.height= 18, warning = FALSE, message = FALSE, fig.cap = "Heatmap of top markers of each cell type (and subcluster)"}
+topx_features <- topx %>% 
+  pull(feature)
+
+hm <- plot_heatmap(ScaleData(so_epi, features =  topx_features),
+             topx_features, 
+             group = "harmony_cell_type_cluster",
+             average = TRUE,
+             hmap_options = list(column_names_rot = 90,
+                                 col = viridis::magma(256)))
+
+pdf(file.path(fig_dir,
+              "cell_types_no_immune_refined_marker_heatmap.pdf"),
+    height = 18,
+    width = 9)
+draw(hm)
+a <- dev.off(); rm(a)
+
+hm
+```
+## Get de genes between elastase and saline
+
+
+```{r}
+clusters <- unique(so_epi@meta.data$harmony_cell_type_cluster)
+treatment <- as.character(unique(so_epi@meta.data$treatment))
+so_tmp <- so_epi
+so_tmp$cluster_treatment <- str_c(so_epi$treatment, 
+                                  "_",
+                                  so_epi$harmony_cell_type_cluster)
+
+de_res <- map(clusters, ~{
+    to_test <- str_c(treatment, "_", .x)
+    wilcoxauc(so_tmp, "cluster_treatment", groups_use = str_c(treatment, "_", .x)) %>% 
+      filter(group == to_test[1]) %>% 
+        arrange(desc(logFC))
+  })
+names(de_res) <- clusters
+
+de_sig_res <- map(de_res, 
+                  ~filter(.x, padj < 0.05) %>% 
+                    arrange(padj, desc(abs(logFC))))
+names(de_sig_res) <- clusters
+
+de_res <- c(list(Description = scbp::presto_marker_description()), de_res)
+openxlsx::write.xlsx(de_res, file.path("tables", "Elastase_v_Saline_per_cell_type.xlsx"))
+
+de_sig_res_tbls <- c(list(Description = scbp::presto_marker_description()), de_sig_res)
+openxlsx::write.xlsx(de_sig_res, file.path("tables", "Elastase_v_Saline_per_cell_type_significant.xlsx"))
+```
+
+```{r}
+plot_harmony(so, "harmony_cell_type_cluster")
+```
+
+### Top upregulated genes in each cell population 
+
+```{r, fig.height = 24, fig.width=9, cache.lazy=FALSE}
+topx_de_up <- map(de_sig_res[map_lgl(de_sig_res, ~nrow(.x) > 1)], 
+               ~filter(.x, logFC > 0)  %>% 
+                 .$feature %>% 
+                 .[1:6] %>% 
+                 na.omit)
+
+plot_split <- function(seurat_obj, feature, ...){
+  plot_harmony(seurat_obj, feature, group = "treatment", ...)
+}
+plot_montage(so_epi, topx_de_up, plot_fxn = plot_split)
+```
+
+
+### Top downregulated genes in each cell population 
+
+```{r, fig.height = 24, fig.width= 9, cache.lazy=FALSE}
+topx_de_down <- map(de_sig_res[map_lgl(de_sig_res, ~nrow(.x) > 1)], 
+               ~filter(.x, logFC < 0) %>% 
+                 .$feature %>% 
+                 .[1:6] %>% 
+                 na.omit)
+
+plot_montage(so_epi, topx_de_down, plot_fxn = plot_split)
+```
+
+## Save data analysis
+
+```{r} 
+qsave(so, file.path(obj_dir, "combined_so2.qs"), nthreads = 4)
+
+mdata_out <- get_metadata(so)
+outname <- file.path("tables", 
+                     paste0("metadata_", 
+                            format(Sys.Date(), "%Y_%m_%d"),
+                            ".tsv.gz"))
+write_tsv(mdata_out, outname)
+
+```
+
+```{r, eval = FALSE}
+so  <- qread(file.path(obj_dir, "combined_so.qs"))
+```
+

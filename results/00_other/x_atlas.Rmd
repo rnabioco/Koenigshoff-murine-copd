@@ -11,9 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r libs, message=FALSE, warning=FALSE, echo=FALSE}
 source(here::here("R", "utils.R"))
 
-rmd_dir <- "atlas"
-
-obj_dir <- file.path(obj_dir, rmd_dir)
+obj_dir <- file.path("../objects/atlas")
 
 walk(obj_dir, dir.create, showWarnings = FALSE, recursive = TRUE)
 

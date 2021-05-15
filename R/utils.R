@@ -8,6 +8,9 @@ library(DropletUtils)
 library(scbp)
 library(presto)
 library(qs)
+library(scuttle)
+library(scDblFinder)
+library(scran)
 theme_set(theme_cowplot())
 
 
@@ -249,3 +252,159 @@ get_orthologs <- function(vec,
     pull(mmusculus_homolog_associated_gene_name)
 
 }
+
+#' Examine doublet
+#'
+#' @param so seurat object
+#' @param clusters name of column indicating cluster ids
+#' @param samples name of column indicating sample
+#' @param ndim # of dimensions to use for single cell doublet detection
+#' @param k_val # of neighbors to use for single cell doublet detection
+score_doublets <- function(so,
+                           cluster_col = "seurat_clusters",
+                           sample_col = "orig.ident",
+                           ndim = 20,
+                           k_val = 50) {
+  sample_df <- split(so@meta.data, so@meta.data[[sample_col]])
+
+  res <- map(sample_df,
+             ~{tmp <- subset(so, cells = rownames(.x))
+
+             n_clusters <- length(unique(tmp[[cluster_col]]))
+             if(n_clusters < 3) {
+               dbl.out <- NULL
+             } else {
+               dbl.out <- scDblFinder::findDoubletClusters(tmp@assays$RNA@data,
+                                                           clusters = tmp@meta.data[[cluster_col]],
+                                                           assay.type = "logcounts")
+             }
+
+             tmp <- FindVariableFeatures(tmp, nfeatures = 2000)
+             dbl_scores <- scDblFinder::computeDoubletDensity(tmp@assays$RNA@data,
+                                                              subset.row = VariableFeatures(tmp),
+                                                              dims = ndim,
+                                                              k = k_val)
+             dbl_scores <- data.frame(row.names = colnames(tmp),
+                                      doublet_scores = dbl_scores)
+             list(cluster = dbl.out,
+                  cell = dbl_scores)
+             })
+  so@misc[["doublets"]] <- res
+
+  doublet_score <- map_dfr(so@misc$doublets, ~.x$cell)
+  doublet_score <- doublet_score[colnames(so), ]
+  so$doublet_score <- doublet_score
+  so
+}
+
+#' Identify outliers using MAD
+#'
+#' @param vec vector of data
+#' @param groups vector of groups for each data point, passed to batch arg of
+#' scuttle::isOutlier
+#' @param min if data is less than min, then do not consider an outlier
+#' @param max if data is greater than min, then always consider an outlier
+check_outliers <- function(vec, groups = NULL, min = NULL, max = NULL, ...){
+  res <- scuttle::isOutlier(vec, batch = groups, ...)
+  if(!is.null(max)){
+    res[vec > max] <- TRUE
+  }
+  if(!is.null(min)){
+    res[vec < min] <- FALSE
+  }
+  res
+}
+
+add_subcluster_ids <- function(so,
+                               parent_values = "coarse_cell_type",
+                               child_values = "refined_clusters",
+                               str_format = "{parent_value} ({child_value})") {
+  p <- so@meta.data[[parent_values]]
+  names(p) <- rownames(so@meta.data)
+  v <- so@meta.data[[child_values]]
+
+  p_vals <- unique(p)
+  res <- lapply(p_vals,
+                function(x){
+                  p_subset <- p[which(p == x)]
+                  child_value <- as.integer(factor(v[which(p == x)]))
+                  parent_value = x
+                  res <- stringr::str_glue(str_format)
+                  names(res) <- names(p_subset)
+                  res
+                }) %>%
+    unlist()
+  res[names(p)]
+}
+
+plot_montage <- function(sobj,
+                         feature_list,
+                         ncols = 6,
+                         outfile = NULL,
+                         plot_fxn = plot_umap,
+                         plot_args = list(minimal_theme = TRUE)) {
+
+  all_plts <- list()
+  rel_heights <- c()
+  for(i in seq_along(feature_list)){
+
+    features <- feature_list[[i]]
+    id <- names(feature_list)[i]
+    n_plts <- length(features)
+
+    plts <- do.call(plot_fxn, args = c(list(seurat_obj = sobj,
+                                            feature = features),
+                                       plot_args))
+
+    title_plt <- ggplot() +
+      theme_void() +
+      labs(tag = str_wrap(id, 20)) +
+      theme(plot.tag.position = c(0.75, 0.5),
+            plot.tag = element_text(angle = 0,
+                                    size = 18,
+                                    face = "bold"))
+
+    title_plts <- c(list(title_plt), vector("list", ncols - 1))
+
+    if (is.ggplot(plts)) {
+      plts <- list(plts)
+    }
+    plts <- c(title_plts, plts)
+
+    if ((n_plts %% ncols) != 0) {
+      to_add <- ncols - (n_plts %% ncols)
+      plt_lst <- c(plts, vector("list", to_add))
+    } else {
+      plt_lst <- plts
+    }
+
+
+    all_plts <- c(all_plts, plt_lst)
+    nrows <- ceiling(length(plt_lst) / ncols)
+    sub_plot_rel_heights <- c(0.5, rep(1, nrows - 1))
+    rel_heights <- c(rel_heights, sub_plot_rel_heights)
+  }
+
+
+  p <- plot_grid(plotlist = all_plts,
+                 nrow = ceiling(length(all_plts) / ncols),
+                 ncol = ncols,
+                 scale = 0.8,
+                 rel_heights = rel_heights)
+
+
+  if (!is.null(outfile)){
+    save_plot(outfile,
+              p,
+              nrow = ceiling(length(all_plts) / ncols),
+              ncol = ncols,
+              base_asp = 1,
+              base_height = 2,
+              limitsize = FALSE)
+  }
+
+
+  p
+
+}
+

@@ -84,7 +84,18 @@ map(clusters, ~{
     labs(title = .x)
 })
 ```
+Also write out table cell counts
 
+```{r}
+get_cell_count_matrix(so, "cell_type_cluster", "treatment") %>% 
+  rownames_to_column("cell_type") %>% 
+  mutate(Percent_Saline = 100 * (Saline / sum(Saline)),
+         Percent_Elastase = 100 * (Elastase / sum(Elastase))
+         ) %>% 
+  write_csv(file.path(tbls_dir, "cell_counts_per_treatment_cell_type.csv"))
+
+
+```
 # Various analyses requested
 
 ```{r}
@@ -95,6 +106,30 @@ p <- plot_grid(plotlist = umaps, nrow = 2, ncol = 1)
 
 save_plot(file.path(fig_dir, "muc5ac_muc5b_umaps.pdf"), 
           p, nrow = 2, ncol = 1, 
+          base_aspect_ratio = 1.75)
+p
+
+```
+
+```{r}
+p <- plot_umap(so, 
+          "Krt8", 
+          group = "treatment")
+
+save_plot(file.path(fig_dir, "Krt8_umap.pdf"), 
+          p, 
+          base_aspect_ratio = 1.75)
+p
+
+```
+
+```{r}
+p <- plot_umap(so, 
+          "egfp-sv40", 
+          group = "treatment")
+
+save_plot(file.path(fig_dir, "Wnt-egfp-sv40_umap.pdf"), 
+          p, 
           base_aspect_ratio = 1.75)
 p
 
@@ -114,6 +149,23 @@ save_plot(file.path(fig_dir, "muc5ac_muc5b_vln_plots.pdf"),
           base_aspect_ratio = 1.5)
 
 ```
+
+## Examine ATII cluster markers
+
+```{r}
+so_at2 <- subset(so, subset = coarse_cell_type == "AT2 cells" )
+at2_markers <- wilcoxauc(so_at2, "cell_type_cluster") %>% 
+  filter(padj < 0.05,
+         pct_in > 10) %>% 
+  group_by(group) %>% 
+  arrange(padj, .by_group = TRUE)
+
+write_markers_xlsx(split(at2_markers, at2_markers$group),
+                     file.path(tbls_dir, "at2_cluster_differential_expression.xlsx"),
+                   description_string = "Genes differentially expressed between each AT2 cluster versus the other AT2 clusters")
+```
+
+## Examine mucin cells
 
 ```{r}
 so_club <- subset(so, subset = coarse_cell_type %in% c("club cells", "mucin club cells"))
@@ -328,4 +380,88 @@ p
 write_csv(cor_values, "mucin_correlation_values.csv")
 ```
 
+Examine SV40 WNT activity and genes correlated to gfp 
 
+```{r}
+p <- get_metadata(so_mucin, c("egfp-sv40")) %>% 
+  ggplot(aes(`egfp-sv40`, treatment)) +
+    geom_density_ridges(aes(fill = treatment)) + 
+  scale_fill_manual(values = palette_OkabeIto) +
+  theme_ridges() +
+  theme(legend.position = "none")
+    
+
+save_plot(file.path(fig_dir, "club_cells_wnt_egfp_sv40.pdf"), 
+          p,
+          base_asp = 1.4)
+p
+```
+
+```{r}
+genes_to_check <- rownames(so_mucin)[rowSums(so_mucin@assays$RNA@data > 0 ) > 5]
+all_data <- get_metadata(so_mucin, genes_to_check, embedding = NULL) %>% 
+  mutate(treatment = factor(treatment, levels = c("Saline", "Elastase"))) %>% 
+  filter(`egfp-sv40` > 0)
+
+elast <- filter(all_data, treatment == "Elastase")
+saline <- filter(all_data, treatment == "Saline")
+
+cor_values <- map_dfr(to_check, ~{
+  tibble(
+    gene = .x,
+    elastase_muc5b = cor(elast[[.x]], elast[["egfp-sv40"]], method = "spearman"),
+    saline_muc5b = cor(saline[[.x]], saline[["egfp-sv40"]], method = "spearman"))
+  }) %>% 
+  arrange(desc(elastase_muc5b)) 
+
+
+plts <- map(cor_values$gene[2:11], ~{
+  
+  bplot <- ggplot(all_data, aes_string("treatment", .x)) +
+    geom_boxplot(aes(fill = treatment)) +
+    geom_jitter() +
+    scale_fill_manual(values = palette_OkabeIto) +
+    labs(x = "") +
+    theme(legend.position = "none")
+    
+  
+  splts <- map(c("egfp-sv40"),
+      function(x){
+        ecor <- cor(elast[[.x]], elast[[x]], method = "spearman")
+        scor <- cor(saline[[.x]], saline[[x]], method = "spearman")
+        
+        text_df <- tibble(
+          treatment = factor(c("Saline", "Elastase"),levels = c("Saline", "Elastase")),
+          pearson = str_c("r = ", signif(c(scor, ecor), 3))
+        )
+        p <- ggplot(all_data, aes_string(.x, paste0("`", x, "`"))) +
+          geom_point(aes(color = treatment)) +
+          facet_wrap(~treatment) +
+          geom_text(data = text_df,
+                    aes(x = -Inf, y = -Inf, label = pearson),
+                    hjust   = -.5,
+                    vjust   = -20) +
+          scale_color_manual(values = palette_OkabeIto) +
+    theme(legend.position = "none")
+        p
+      })
+  plot_grid(plotlist = c(list(bplot), splts),
+            ncol = 3,
+            nrow = 1, rel_widths = c(0.2, 0.4, 0.4))
+})
+
+p <- plot_grid(plotlist = plts, 
+               nrow = length(plts),
+               ncol = 1)
+save_plot("cor_to_wnt_reporter.pdf", 
+          p,
+          base_asp = 3,
+          nrow = length(plts),
+          ncol = 1)
+p
+
+cor_values %>% 
+  dplyr::rename(elastase_wnt_reporter = elastase_muc5b,
+                saline_wnt_reporter = saline_muc5b) %>% 
+write_csv(., "wnt_reporter_correlation_values.csv")
+```
