@@ -1,0 +1,914 @@
+---
+title: "Whole lung data preprocessing and initial analysis"
+author: "Kent Riemondy RBI"
+date: "`r Sys.Date()`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "html") })
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+    theme: cosmo
+    highlight: tango
+    fig_caption: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = FALSE, 
+                      warning = FALSE,
+                      cache = FALSE,
+                      cache.lazy = FALSE)
+```
+
+
+```{r libs, cache = F}
+source(here::here("R", "utils.R"))
+
+walk(c(fig_dir, mkrs_dir, tbls_dir, obj_dir),
+     dir.create, showWarnings = F)
+seed_value <- 20210528
+```
+
+## Experiment summary
+
+Mouse lungs were treated with elastase and saline to generate COPD and control mice, respectively, followed by isolation of single cells from whole lung for single cell RNA sequencing analysis. 
+
+In this experiment, there are 3 sample per treatment, captured using the 10X Genomics 3’ Platform and subsequent sequencing.
+
+```{r get_data}
+data_dir <- file.path(proj_dir, "data", "2020-12-06")
+
+samples <- c(
+  "C1",
+  "C2",
+  "C3",
+  "E1",
+  "E2",
+  "E3"
+)
+
+sample_paths <- file.path(data_dir,
+                          samples,
+                          "outs", 
+                          "filtered_feature_bc_matrix")
+
+names(sample_paths) <- samples
+mat <- Read10X(sample_paths)
+```
+
+## General QC {.tabset}
+
+```{r, cache.lazy=FALSE}
+sample_paths <- file.path(data_dir,
+                          samples,
+                          "outs", 
+                          "raw_feature_bc_matrix")
+
+names(sample_paths) <- samples
+
+barcode_counts <- imap_dfr(sample_paths, 
+               ~{
+                 cnts <- read10xCounts(.x, col.names = TRUE) %>% counts(.) 
+                 tibble(
+                   cell = colnames(cnts),
+                   cell_id = str_c(.y, "_", cell),
+                   nUMI = Matrix::colSums(cnts))},
+               .id = "sample") %>% 
+  filter(nUMI > 0) %>% 
+  arrange(desc(nUMI)) %>% 
+  mutate(is_cell = cell_id %in% colnames(mat)) %>% 
+  split(., .$sample) %>% 
+  map(~mutate(.x, cell_rank = row_number()))
+                        
+p <- imap(barcode_counts,
+    ~ggplot(.x, aes(cell_rank, nUMI)) +
+      geom_point(aes(color = is_cell)) +
+      annotate("text", x = 10, y = 5, 
+               label = str_c("n = ", scales::comma(sum(.x$is_cell)))) + 
+      scale_color_manual(values = palette_OkabeIto, 
+                         name = "Is Cell?") + 
+      labs(title = .y,
+           x = "Barcode Rank",
+           y = "# of UMIs") +
+      scale_x_log10() + 
+      scale_y_log10())
+
+```
+
+ 
+```{r, results ='asis'}
+
+for(i in seq_along(p)){
+  cat('\n### Barcode Plot Sample: ', names(barcode_counts)[i], '\n')
+  print(p[[i]])
+  cat('\n')
+}
+```
+
+## Other library prep metrics  
+
+```{r, fig.width = 12, fig.height=18}
+metrics_paths <- file.path(data_dir,
+                          samples,
+                          "outs", 
+                          "metrics_summary.csv")
+
+names(metrics_paths) <- samples
+
+mapping_dat <- map_dfr(metrics_paths, read_csv, .id = "sample", 
+                       col_types = cols(
+                         `Estimated Number of Cells` = col_number(),
+                         `Mean Reads per Cell` = col_number(),
+                         `Median Genes per Cell` = col_number(),
+                         `Number of Reads` = col_number(),
+                         `Valid Barcodes` = col_character(),
+                         `Sequencing Saturation` = col_character(),
+                         `Q30 Bases in Barcode` = col_character(),
+                         `Q30 Bases in RNA Read` = col_character(),
+                         `Q30 Bases in UMI` = col_character(),
+                         `Reads Mapped to Genome` = col_character(),
+                         `Reads Mapped Confidently to Genome` = col_character(),
+                         `Reads Mapped Confidently to Intergenic Regions` = col_character(),
+                         `Reads Mapped Confidently to Intronic Regions` = col_character(),
+                         `Reads Mapped Confidently to Exonic Regions` = col_character(),
+                         `Reads Mapped Confidently to Transcriptome` = col_character(),
+                         `Reads Mapped Antisense to Gene` = col_character(),
+                         `Fraction Reads in Cells` = col_character(),
+                         `Total Genes Detected` = col_number(),
+                         `Median UMI Counts per Cell` = col_number()
+                       ))
+
+clean_up_metadata <- function(metrics_summary) {
+  metrics_summary <- mutate_all(metrics_summary, str_remove, "%$")
+  metrics_summary <- mutate_at(metrics_summary, .vars= 2:ncol(metrics_summary), as.numeric)
+  metrics_summary
+}
+
+mapping_dat <- clean_up_metadata(mapping_dat)
+
+metrics <- colnames(mapping_dat)[2:ncol(mapping_dat)]
+mapping_dat <- pivot_longer(mapping_dat, 
+                            cols = -sample, 
+                            names_to = "metric") %>% 
+  mutate(metric = str_wrap(metric, 20))
+
+p <- ggplot(mapping_dat, aes(sample, value)) +
+  geom_col(aes(fill = sample)) +
+  facet_wrap(~metric, 
+             scales = "free",
+             ncol = 4) + 
+  scale_fill_brewer(palette = "Paired") + 
+  labs(x = "", y = "") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+        legend.position = "none") 
+
+p 
+
+save_plot(file.path(fig_dir, "qc_metrics.pdf"),
+          p,
+          nrow = 5,
+          ncol = 4,
+          base_asp = 1)
+```
+
+
+```{r create_seurat, message = F, results = 'hide', warning = F, cache.lazy=F}
+so <- CreateSeuratObject(
+  mat,
+  min.cells = 10,
+  min.features = 200,
+  names.delim = "_",
+  names.field = 1
+)
+
+rm(mat) ; gc()
+
+so <- PercentageFeatureSet(so, 
+                             pattern = "^mt-", 
+                             col.name = "percent.mt")
+
+so@meta.data$sample <- so@meta.data$orig.ident
+so@meta.data$treatment <- ifelse(str_detect(so@meta.data$orig.ident, "^E"),
+                              "Elastase",
+                              "Saline")
+
+so@meta.data$treatment <- factor(so@meta.data$treatment, levels = c("Saline", "Elastase"))
+
+```
+
+## Percent Mitochondrial UMIs 
+
+```{r, fig.cap = "The low mitochondrial UMI % suggests high quality cells", cache.lazy=F}
+p <- plot_violin(so@meta.data, 
+            "sample",
+            "percent.mt",
+            .fill = "treatment",
+            cols = scale_fill_manual(values = palette_OkabeIto)) +
+  labs(x = "", y = "% UMIs from Mitochondrial RNAS") 
+
+save_plot(file.path(fig_dir, "prop_mito.pdf"),
+          p, base_asp = 1.75)
+p
+```
+
+
+## Number of genes detected 
+
+```{r, cache.lazy=F}
+p <- plot_violin(so@meta.data,
+            "sample", 
+            "nFeature_RNA",
+            .fill = "treatment",
+            cols = scale_fill_manual(values = palette_OkabeIto)) +
+  labs(x = "", y = "# of genes per cell")
+
+save_plot(file.path(fig_dir, "ngene.pdf"),
+          p, base_asp = 1.75)
+p
+```
+
+
+## Number of UMIs detected
+
+```{r, cache.lazy=F}
+p <- plot_violin(so@meta.data, 
+            "sample",
+            "nCount_RNA", 
+            .fill = "treatment",
+            cols = scale_fill_manual(values = palette_OkabeIto)) +
+  labs(x = "", y = "# of UMIs") + 
+        scale_y_continuous(breaks = scales::pretty_breaks(n = 10))
+
+save_plot(file.path(fig_dir, "numi.pdf"),
+          p, base_asp = 1.75)
+p
+```
+
+### Table of mitochondrial proportions per sample
+
+```{r, message = FALSE, cache.lazy=F}
+so@meta.data %>% 
+  group_by(sample) %>% 
+  summarize(median_percent_mito = median (percent.mt), 
+            mean_percent_mito = mean(percent.mt)) %>% 
+  arrange(desc(median_percent_mito))
+```
+
+
+## Relationship between UMIs and % mitochondria {.tabset}
+
+```{r, cache.lazy=F}
+so$outlier_percent_mt <- check_outliers(so$percent.mt, 
+                                        so$sample, 
+                                        min = 5, 
+                                        max = 20)
+
+sample_names <- as.character(unique(so@meta.data$orig.ident))
+per_sample <- map(sample_names, ~filter(so@meta.data, 
+                                        orig.ident == .x))
+p <- list()
+for(i in seq_along(per_sample)){
+  .col <- discrete_palette_default[i]
+  p[[i]] <- ggplot(per_sample[[i]], aes(nCount_RNA, percent.mt)) +
+        geom_point(aes(color = outlier_percent_mt)) +
+        scale_color_manual(values = palette_OkabeIto) +
+        scale_x_continuous(breaks = scales::pretty_breaks(n = 10)) +
+        scale_y_continuous(breaks = scales::pretty_breaks(n = 10)) +
+    theme(axis.text.x = element_text(angle= 90, hjust = 1, vjust = 0.5)) +
+    labs(subtitle = unique(per_sample[[i]]$orig.ident))
+}
+
+plt <- plot_grid(plotlist = p, nrow = 2, ncol = 2)
+
+save_plot(file.path(fig_dir, "umi_v_prop_mito.pdf"),
+          plt,
+          base_asp = 1, 
+          nrow = 2,
+          ncol = 2)
+
+plt
+```
+
+
+## Filter cells and samples
+
+
+Overall the sample quality looks quite excellent, with a good # of cells captured, low # of cells with high mitochondrial reads, and low background from lysed cells.
+
+Suggest using some minor filters to remove cells with outlier mitochondrial UMIs (>3 MAD or > 20%), > 20K UMI or < 500 UMIs, > 5000 genes detected . 
+
+```{r rows.print = 30, cache.lazy=F}
+
+prev_count <- dplyr::count(so@meta.data, sample)
+filter_summary <- list(
+  "Cells called by cellranger" = prev_count)
+
+so <- subset(so, subset = outlier_percent_mt, invert = T)
+cur_count <- dplyr::count(so@meta.data, sample)
+filter_summary$"Too high Mitochondrial reads" <- cur_count %>%
+  left_join(prev_count, by = "sample") %>% 
+  mutate(n = n.y - n.x) %>% 
+  dplyr::select(sample, n)
+prev_count <- cur_count
+
+so <- subset(so, subset = nCount_RNA < 50000)
+cur_count <- dplyr::count(so@meta.data, sample)
+filter_summary$"Too high # of UMIs" <- cur_count %>%
+  left_join(prev_count, by = "sample") %>% 
+  mutate(n = n.y - n.x) %>% 
+  dplyr::select(sample, n)
+prev_count <- cur_count
+
+so <- subset(so, subset = nFeature_RNA < 7500)
+cur_count <- dplyr::count(so@meta.data, sample)
+filter_summary$"Too low # of genes" <- cur_count %>%
+  left_join(prev_count, by = "sample") %>% 
+  mutate(n = n.y - n.x) %>% 
+  dplyr::select(sample, n)
+prev_count <- cur_count
+
+so <- subset(so, subset = nCount_RNA > 500)
+cur_count <- dplyr::count(so@meta.data, sample)
+filter_summary$"Too low # of UMIs" <- cur_count %>%
+  left_join(prev_count, by = "sample") %>% 
+  mutate(n = n.y - n.x) %>% 
+  dplyr::select(sample, n)
+prev_count <- cur_count
+
+filter_summary$"Passed QC" <- cur_count
+
+cell_counts_post_qc <- bind_rows(filter_summary, .id = "Catagory") %>% 
+  dplyr::rename("# of cells" = n,
+                Category = Catagory)
+```
+
+```{r, fig.cap = "Cell counts pre/post filtering.", cache.lazy=F}
+filter(cell_counts_post_qc, Category != "Cells called by cellranger") %>% 
+
+ggplot(aes(sample, `# of cells`)) +
+  geom_col(aes(fill = Category)) + 
+  scale_fill_manual(values = discrete_palette_default,
+                    name = "") +
+  labs(x = "sample",
+       y = "# of cells")
+```
+
+## Normalize and embed into 2D with UMAP
+
+```{r}
+opts <- list(
+  n_var = 2000,
+  ndims = 30,
+  k = 15,
+  min_dist = 0.4,
+  coarse_clustering = "RNA_snn_res.0.1",
+  refined_clustering = "RNA_snn_res.0.8"
+)
+```
+
+For this dataset mostly standard Seurat processing will be performed. The top `r opts$n_var` variable genes will be used for PCA. The top `r opts$ndims` PCs will be used to generate a UMAP projection (min_dist = `r opts$min_dist`) and to perform clustering at various resolutions. Two clustering settings will be used to capture broad or more refined clusters. 
+
+```{r, message=FALSE, warning=FALSE, eval = FALSE}
+so <- NormalizeData(so)
+
+so <- FindVariableFeatures(so,
+                           selection.method = "vst",
+                           nfeatures = opts$n_var,
+                           verbose = FALSE)
+  
+so <- ScaleData(so, verbose = FALSE)
+
+so <- RunPCA(so, 
+             npcs = 40, 
+             verbose = FALSE, 
+             seed.use = seed_value)
+
+so <- FindNeighbors(so, 
+                    reduction = "pca", 
+                    dims = 1:opts$ndims, 
+                    k.param = opts$k, 
+                    verbose = FALSE)
+
+so <- RunUMAP(so, 
+              dims = 1:opts$ndims,
+              n.neighbors = opts$k,
+              min.dist = opts$min_dist, 
+              seed.use = seed_value,
+               verbose = FALSE)
+
+so <- FindClusters(so, 
+                   resolution = seq(0.1, 1, 0.1),
+                   random.seed = seed_value,
+                    verbose = FALSE)
+```
+
+```{r}
+so <- qread("objects/so.qs", nthreads = 4)
+```
+
+### by treatment
+
+```{r}
+plot_umap(so, "sample", group = "treatment", sorted = "random", .col = palette_OkabeIto)
+```
+
+
+### by cluster
+
+```{r, warning = FALSE, fig.height=16, fig.width=16, fig.cap = "Clustering at various resolution settings." }
+cluster_cols <- str_subset(colnames(so@meta.data), "RNA_snn")
+
+plot_umap(so, 
+          cluster_cols, 
+          label_text = TRUE, 
+          label_color = "black",
+          ggrepel_opts = list(force = 0)) %>% 
+  plot_grid(plotlist = .,
+            nrow = 4,
+            ncol = 3)
+```
+
+
+Two clustering settings will be used; `r opts$coarse_clustering` as the "coarse" clustering and 
+`r opts$refined_clustering` as a refined clustering setting to examine sub-states within cell types. 
+
+```{r}
+so$coarse_clusters <- so@meta.data[[opts$coarse_clustering]] 
+so$refined_clusters <- so@meta.data[[opts$refined_clustering]]
+Idents(so) <- "coarse_clustering"
+```
+
+```{r}
+plts <- plot_umap(so, c("coarse_clusters", 
+                "refined_clusters"), 
+                group = "sample",
+                sorted = "random")
+
+names(plts) <- c("coarse_clusters", 
+                "refined_clusters")
+
+```
+
+```{r, results ='asis'}
+for(i in seq_along(plts)){
+  cat('\n### UMAP by ', names(plts)[i], '\n')
+  print(plts[[i]])
+  cat('\n')
+}
+```
+
+
+## Annotate cell types
+
+To annotate cell types we use use the `clustifyr` package developed by Rui Fu in the RBI. We will compare the refined clusters defined above to a reference dataset of cell types. The reference data will be taken from the `Strunz et al. Nature Commmunications 2020` paper in which whole lung or lung epithelia were profiled with single cell RNA-seq. The paper used a bleomycin injury model, but for this analysis only control  (PBS) non-injured cells will be used to generate reference cell types. Note however that there are some control cells annotated as the injured cell states, "e.g. activated club cells", so these cell states may also be present. 
+
+
+```{r, fig.width = 9, fig.height=9, fig.cap = "Heatmap of correlation coefficients between the refined clusters in our data and the reference cell types defined in the Strunz et al dataset.", message = FALSE}
+library(clustifyr)
+library(ComplexHeatmap)
+
+ref <- readRDS(here("results", "objects", "atlas", "ctrl_reference.rds"))
+
+res <- clustify(so, 
+                cluster_col = "refined_clusters",
+                query_genes = VariableFeatures(so),
+                ref_mat = ref, 
+                obj_out = FALSE,
+                compute_method = "pearson") 
+
+hm <- Heatmap(t(res),
+              col = viridis::magma(256),
+              row_title = "Cell types (Strunz et al)",
+              column_title_side = "bottom",
+              column_title = "clusters",
+              name = "Pearson")
+
+pdf(file.path(fig_dir, "cell_type_cor_heatmap.pdf"),
+    width = 9,
+    height = 9)
+draw(hm)
+a <- dev.off(); rm(a)
+
+hm
+```
+
+
+Using these reference datasets as a guide, each cluster will be assigned to the most correlated cell type in the reference. Most clusters have very high correlation to the cell types in the reference lung dataset, however the clusters correlated to the club cells generally have lower (0.5 - 0.6) correlation. **In previous experiments these correlation values were > 0.8 for club cells** 
+
+```{r, rows.print = 15, fig.cap = "Cell type assignment based on highest correlation values."}
+cor_to_call(res) %>% 
+  dplyr::rename(cell_type = type,
+         cor_val = r)
+```
+
+### Annotated cell types
+
+```{r , message = FALSE, eval = FALSE}
+so@meta.data$UMAP_1 <- NULL
+so@meta.data$UMAP_2 <- NULL
+so@meta.data$r <- NULL
+so@meta.data$type <- NULL
+so <- clustify(so, 
+                cluster_col = "refined_clusters",
+                query_genes = VariableFeatures(so),
+                ref_mat = ref, 
+                obj_out = TRUE,
+                compute_method = "pearson") 
+so@meta.data$UMAP_1 <- NULL
+so@meta.data$UMAP_2 <- NULL
+so@meta.data$r <- NULL
+so@meta.data$coarse_cell_type <- so@meta.data$type
+so@meta.data$type <- NULL
+
+so@meta.data$coarse_cell_type <- str_split(so@meta.data$coarse_cell_type, "_") %>% 
+    map_chr(~.x[length(.x)]) %>% 
+  str_to_title()
+```
+
+```{r fig.cap = "UMAP of annotated cell types ", fig.width= 12, fig.height=6}
+p <- plot_umap(so,
+  "coarse_cell_type",
+  group = "treatment",
+  legend_title = ""
+)
+
+save_plot(file.path(fig_dir, "umap_of_annotated_cell_types.pdf"),
+          p,
+          base_asp = 2)
+p
+```
+
+
+Note that using the Strunz et al reference did not confidently identify a club cell population. 
+
+Next I'll try correlating against the reference per cell rather than per cluster. Shown below are the correlation cooefficients computed per cell for each indicated cell type from the reference Strunz et al dataset.
+
+```{r}
+res <- clustify(so, 
+                per_cell = T,
+                cluster_col = "refined_clusters",
+                query_genes = VariableFeatures(so),
+                ref_mat = ref,
+                obj_out = FALSE,
+                compute_method = "spearman")
+
+plt_dat <- rownames_to_column(as.data.frame(res), "cell") %>% 
+  left_join(get_metadata(so)) 
+
+map(str_subset(colnames(res), "[Cc]lub|[Gg]oblet"), 
+    ~ggplot(plt_dat, aes(UMAP_1, UMAP_2)) +
+      geom_point(aes_string(color = str_c("`", .x, "`")), shape = '.') +
+      scale_color_continuous(type = "viridis"))
+```
+
+
+There doesn't appear to be a very clear rare distinct population with high correlation. The populations annotated as goblet or ciliated are correlated to the club cell gene expression, but another distinct set of cells is not clearly observed. 
+
+### Show known cell type markers
+
+```{r}
+mkr_list <- read_excel(here("dbases", "mouse_lung_epithelial_cell_marker_list.xlsx")) %>% 
+  split(., 1:nrow(.)) 
+  
+last_seen <- NA
+grps <- vector("character", length(mkr_list))
+for (i in seq_along(mkr_list)){
+  val <- mkr_list[[i]]$List
+  if(is.na(val)){
+      grps[i] <- last_seen
+  } else {
+      last_seen <- val
+      grps[i] <- val
+  }
+}
+mkr_list <- bind_rows(mkr_list) %>% 
+  mutate(cell_type = grps) %>% 
+  dplyr::select(-List) %>% 
+  split(., .$cell_type) %>% 
+  map(~.x$Name)
+
+mkr_list <- map(mkr_list, ~.x[.x %in% rownames(so)])
+```
+
+```{r, fig.width = 10, fig.height = 24, fig.cap = "Montage of UMAPs of cell types markers"}
+plot_montage <- function(sobj,
+                         feature_list,
+                         ncols = 6,
+                         outfile = NULL,
+                         plot_fxn = plot_umap,
+                         plot_args = list(minimal_theme = TRUE,
+                                          sorted = "random")) {
+  
+  all_plts <- list()
+  rel_heights <- c()
+  for(i in seq_along(feature_list)){
+    
+    features <- feature_list[[i]]
+    id <- names(feature_list)[i]
+    n_plts <- length(features)
+    
+    plts <- do.call(plot_fxn, args = c(list(seurat_obj = sobj, 
+                                            feature = features), 
+                                       plot_args))
+    
+    title_plt <- ggplot() +
+      theme_void() + 
+      labs(tag = str_wrap(id, 20)) +
+      theme(plot.tag.position = c(0.75, 0.5),
+            plot.tag = element_text(angle = 0,
+                                    size = 18,
+                                    face = "bold"))
+    
+    title_plts <- c(list(title_plt), vector("list", ncols - 1))
+    
+    if (is.ggplot(plts)) {
+      plts <- list(plts)
+    }
+    plts <- c(title_plts, plts)
+    
+    if ((n_plts %% ncols) != 0) {
+      to_add <- ncols - (n_plts %% ncols)
+      plt_lst <- c(plts, vector("list", to_add))
+    } else {
+      plt_lst <- plts
+    }
+    
+    
+    all_plts <- c(all_plts, plt_lst)
+    nrows <- ceiling(length(plt_lst) / ncols)
+    sub_plot_rel_heights <- c(0.5, rep(1, nrows - 1))
+    rel_heights <- c(rel_heights, sub_plot_rel_heights)
+  }
+  
+  
+  p <- plot_grid(plotlist = all_plts,
+                 nrow = ceiling(length(all_plts) / ncols),
+                 ncol = ncols,
+                 scale = 0.8,
+                 rel_heights = rel_heights)
+  
+  
+  if (!is.null(outfile)){
+    save_plot(outfile,
+              p,
+              nrow = ceiling(length(all_plts) / ncols),
+              ncol = ncols,
+              base_asp = 1,
+              base_height = 2,
+              limitsize = FALSE)
+  }
+  
+  
+  p
+  
+}
+
+plot_montage(so, 
+             mkr_list, 
+             outfile = file.path(fig_dir, "known_marker_umap_summary.pdf"))
+```
+
+The club cells are expected to be rare and based on marker gene expression there isn't a very strong enrichment for club cell markers in any large cluster. `Scgb1a1` is broadly expressed, but only a small subset seems to express very highly. 
+
+## Compare club cells between experiments
+
+Next I will use the club cells identified in previous experiments to clearly identify club cells in this experiment.
+
+```{r, fig.width = 9, fig.height=6}
+old_so <- qread(file.path("..", "03_tdtomato_egfp_expt2", "objects", "so.qs"),
+                nthreads = 4)
+Idents(old_so) <- "coarse_cell_type"
+avg_expr <- log1p(AverageExpression(old_so)$RNA)
+
+res <- clustify(so, 
+                cluster_col = "refined_clusters",
+                query_genes = VariableFeatures(so),
+                ref_mat = avg_expr, 
+                obj_out = FALSE,
+                compute_method = "pearson") 
+
+hm <- Heatmap(t(res),
+              col = viridis::magma(256),
+              row_title = "Cell types (tdTomato expt)",
+              column_title_side = "bottom",
+              column_title = "clusters",
+              name = "Pearson")
+
+pdf(file.path(fig_dir, "expt_cell_type_cor_heatmap.pdf"),
+    width = 9,
+    height = 9)
+draw(hm)
+a <- dev.off(); rm(a)
+
+hm
+```
+Shown below are the highest correlated cell type for each cluster. Note that the clusters most correlated to club cells have generally low correlation values and are likely spurious correlations. 
+
+```{r, rows.print = 15, fig.cap = "Cell type assignment based on highest correlation values."}
+cor_to_call(res) %>% 
+  dplyr::rename(cell_type = type,
+         cor_val = r)
+```
+
+
+```{r, eval = FALSE}
+so <- clustify(so, 
+                cluster_col = "refined_clusters",
+                query_genes = VariableFeatures(so),
+                ref_mat = avg_expr, 
+                obj_out = TRUE,
+                compute_method = "pearson")
+so@meta.data$UMAP_1 <- NULL
+so@meta.data$UMAP_2 <- NULL
+so@meta.data$r <- NULL
+so@meta.data$expt_cell_type <- so@meta.data$type
+so@meta.data$type <- NULL
+```
+
+```{r, fig.cap="Assigned cell types using the previous experiments cell types. Note that clusters without strong correlation are assigned as unassigned."}
+p <- plot_umap(so,
+  "expt_cell_type",
+  group = "treatment",
+  legend_title = ""
+)
+
+p
+```
+
+There are two potential club cell clusters, annotated as goblet and activated club cells. 
+
+```{r}
+club_cell_types <- str_subset(unique(so$expt_cell_type), "Club|Goblet")
+
+p <- plot_umap(so,
+  "expt_cell_type",
+  group = "treatment",
+  legend_title = "",
+  highlight = club_cell_types
+)
+
+save_plot(file.path(fig_dir, "umap_of_club_cells.pdf"),
+          p,
+          base_asp = 2)
+p
+```
+
+<br>
+<br>
+
+Shown below are the top 10 markers of the cell populations defined in the previous experiment. Note that these markers do not cleanly mark a club cell population. 
+
+```{r, fig.width = 10, fig.height = 16, fig.cap = "Montage of UMAPs of cell types markers"}
+old_mkrs <- read_tsv(file.path("..", "03_tdtomato_egfp_expt2", "markers", "cell_types_coarse_cluster_markers.tsv"))
+
+split(old_mkrs, old_mkrs$group) %>% 
+  map(~arrange(.x, padj, desc(logFC)) %>% 
+        pull(feature) %>% 
+        .[1:10]) %>% 
+  .[c("Activated Club Cells", "Club Cells", "Goblet Cells")] %>% 
+  plot_montage(so, 
+             .,, 
+             outfile = file.path(fig_dir, "club_goblet_marker_umap_summary.pdf"))
+```
+
+## Recluster club-like cells
+
+```{r, eval = FALSE}
+club_so <- subset(so, subset = expt_cell_type %in% club_cell_types)
+club_so <- FindVariableFeatures(club_so, nfeatures = 1000) %>% 
+  ScaleData() %>% 
+  RunPCA() %>% 
+  FindNeighbors() %>% 
+  FindClusters() %>% 
+  RunUMAP(dims = 1:20)
+```
+
+```{r}
+club_so <- qread("objects/club_so.qs", nthreads = 4)
+plot_umap(club_so, "seurat_clusters", group = "treatment", pt_size = 0.5)
+```
+
+```{r}
+plot_umap(club_so, c("Muc5b", "Muc5ac"), group = "treatment", pt_size = 0.5)
+```
+
+## Compute cell type markers 
+
+```{r}
+mkrs <- get_marker_summaries(club_so, 
+                     "seurat_clusters", 
+                     outdir = mkrs_dir, 
+                     min_pct = 10,
+                     prefix = "club_subset_")
+
+topx <- mkrs$mkrs %>% 
+  filter(logFC > 0, padj < 0.05) %>% 
+  mutate(group = factor(group, levels = sort(unique(club_so$seurat_clusters)))) %>% 
+  group_by(group) %>% 
+  arrange(padj, desc(logFC)) %>% 
+  dplyr::slice(1:10) 
+```
+
+Shown below are the top 10 markers of each cell population in a table and heatmap.
+
+```{r, rows.print = 15, columns.print = 15}
+topx %>% 
+  select(feature, group) %>% 
+  group_by(group) %>% 
+  mutate(id = row_number()) %>% 
+  pivot_wider(names_from = "group", values_from = "feature") %>%
+  select(-id)
+```
+
+
+```{r, fig.width = 6, fig.height= 12, warning = FALSE, message = FALSE, fig.cap = "Heatmap of top markers of each subcluster"}
+topx_features <- topx %>% 
+  pull(feature)
+
+hm <- plot_heatmap(ScaleData(club_so, features =  topx_features),
+             topx_features, 
+             group = "seurat_clusters",
+             average = TRUE,
+             hmap_options = list(column_names_rot = 90,
+                                 col = viridis::magma(256)))
+
+pdf(file.path(fig_dir,
+              "club_cell_types_refined_marker_heatmap.pdf"),
+    height = 18,
+    width = 9)
+draw(hm)
+a <- dev.off(); rm(a)
+
+hm
+```
+
+## Find populations that differ between treatments
+
+Lastly I'll examine the whole lung dataset to find differences in cell populations between elastase and saline. 
+```{r}
+library(edgeR)
+abundances <- table(so$refined_clusters, so$orig.ident) 
+abundances <- unclass(abundances) 
+extra.info <- so@meta.data[match(colnames(abundances), so$orig.ident),]
+y.ab <- DGEList(abundances, samples=extra.info)
+keep <- filterByExpr(y.ab, group=y.ab$samples$orig.ident)
+y.ab <- y.ab[keep,]
+
+design <- model.matrix(~factor(treatment), y.ab$samples)
+y.ab <- estimateDisp(y.ab, design, trend="none")
+fit.ab <- glmQLFit(y.ab, design, robust=TRUE, abundance.trend=FALSE)
+res <- glmQLFTest(fit.ab, coef=ncol(design))
+
+da_res <- topTags(res) %>% 
+  as.data.frame() %>% 
+  rownames_to_column("refined_clusters") 
+
+```
+
+
+```{r}
+to_plot <- da_res %>% 
+    filter(FDR < 0.01) %>% 
+  pull(refined_clusters)
+
+to_plot_pretty <- filter(so@meta.data, refined_clusters %in% to_plot) %>% 
+  mutate(
+    clusts = factor(refined_clusters, levels = to_plot),
+    id = str_c(coarse_cell_type, "_", refined_clusters )) %>%
+  arrange(clusts) %>% 
+  pull(id) %>%
+  unique()
+
+cell_counts <- get_cell_count_matrix(so, "orig.ident", "refined_clusters") 
+cell_props <- 100 * (t(t(cell_counts) / rowSums(cell_counts)))
+cell_props <- cell_props[, to_plot]
+colnames(cell_props) <- to_plot_pretty
+Heatmap(cell_props,
+        name = "percent of cells", 
+        col =  viridis::magma(256),
+        cluster_rows = FALSE)
+```
+
+```{r}
+p <- plot_umap(so, "refined_clusters", 
+          group = "orig.ident",
+          highlight = to_plot)
+p
+```
+
+
+## Conclusions
+
+Based on these analyses it is unclear if there are enough club cells to confidently identify in this dataset. The clusters most highly correlated to club cells still have low correlation values, and the markers don't clearly identify them as club cells (at least as compared to previous experiments). 
+
+Closer examination of the cell subsets annotated as "activated" or goblet, have very little mucin expression. 
+
+```{r, eval = FALSE}
+qsave(so, "objects/so.qs")
+qsave(club_so, "objects/club_so.qs")
+```
+
