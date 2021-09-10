@@ -1,0 +1,293 @@
+---
+title: "Additional"
+author: "Kent Riemondy RBI"
+date: "`r Sys.Date()`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "html") })
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+    theme: cosmo
+    highlight: tango
+    fig_caption: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = FALSE, 
+                      warning = FALSE,
+                      cache = TRUE)
+```
+
+
+```{r libs}
+source(here::here("R", "utils.R"))
+
+walk(c(fig_dir, mkrs_dir, tbls_dir, obj_dir),
+     dir.create, showWarnings = F)
+seed_value <- 20210413
+```
+
+# Analysis goals
+
+
+## Whole lung
+ I have assigned the sub-clusters to epithelial cell types. Please see below:
+0-club non-mucin
+1-ATII
+2-Krt8+
+3-ciliated 
+4-club non-mucin
+5-ATII
+6- club mucin
+7- club mucin
+It will be interesting to check if 1 and 5 are similar to the ATII sub-clusters in the tdTomato data. For cluster 2, an enrichment of mitochondrial genes is similar to the ATII-2,4,5 in the tdTomato data set. However, there is no surfactant genes but a fairly high Krt8 level, I just call it Krt8+ cells. 
+
+## tdTomato
+
+For the tdTomato data set. We would like to continue looking at the GFP expression in the epithelial cells. It will be great if you could generate a gene list that correlated with GFP level in the epithelial cell types in saline vs PPE, like what you have done with the initial 2 samples. I'm currently working on a manuscript to combine the results of both mouse and human single cells. So I would like to send this gene list to our Germany collaborators to see if they could find similar results in the human data.
+Please let me know if you have any question.
+
+
+```{r}
+so_fns <- list(
+  whole_lung = "../02_whole_lung/objects/club_so.qs",
+  tdtomato = "objects/combined_so2.qs"
+)
+```
+
+## Whole lung
+
+```{r}
+so_club <- qread(so_fns$whole_lung)
+so_tom <- qread(so_fns$tdtomato)
+```
+
+```{r}
+reid <- c(
+  '0' = 'club non-mucin',
+  '1' = 'ATII',
+  '2' = 'ciliated',
+  '3' = 'ciliated' ,
+  '4' = 'club non-mucin',
+  '5' = 'ATII-club intermediate cells',
+  '6' = 'club mucin',
+  '7' = 'club mucin')
+
+so_club$cell_types <- str_c(reid[so_club$seurat_clusters], " (", so_club$seurat_clusters,")") 
+
+plot_umap(so_club, "cell_types")
+```
+
+```{r}
+Idents(so_tom) <- "harmony_cell_type_cluster"
+avg_expr <- log1p(AverageExpression(so_tom)$RNA)
+library(clustifyr)
+library(ComplexHeatmap)
+res <- clustify(so_club, 
+                cluster_col = "cell_types",
+                ref_mat = avg_expr, 
+                obj_out = FALSE,
+                compute_method = "pearson") 
+
+hm <- Heatmap(t(res),
+              col = viridis::magma(256),
+              row_title = "Cell types (tdTomato expt)",
+              column_title_side = "bottom",
+              column_title = "Whole lung cells",
+              name = "Pearson")
+
+pdf(file.path(fig_dir, "whole_lung_v_tdtomato_combined_cell_type_cor_heatmap.pdf"),
+   width = 9,
+   height = 9)
+draw(hm)
+a <- dev.off(); rm(a)
+
+hm
+```
+
+```{r, rows.print = 15, fig.cap = "Cell type assignment based on highest correlation values."}
+cor_to_call(res) %>% 
+  dplyr::rename(
+    whole_lung_cell_type = cluster,
+    combined_tdtomato_cell_type = type,
+         cor_val = r)
+```
+
+```{r}
+Idents(so_tom) <- "og_cluster_labels"
+avg_expr <- log1p(AverageExpression(so_tom)$RNA)
+library(clustifyr)
+library(ComplexHeatmap)
+res <- clustify(so_club, 
+                cluster_col = "cell_types",
+                ref_mat = avg_expr, 
+                obj_out = FALSE,
+                compute_method = "pearson") 
+
+hm <- Heatmap(t(res),
+              col = viridis::magma(256),
+              row_title = "Cell types (tdTomato expt)",
+              column_title_side = "bottom",
+              column_title = "Whole lung cells",
+              name = "Pearson")
+
+pdf(file.path(fig_dir, "whole_lung_v_tdtomato_expt_split_cell_type_cor_heatmap.pdf"),
+   width = 9,
+   height = 9)
+draw(hm)
+a <- dev.off(); rm(a)
+
+hm
+```
+
+```{r, rows.print = 15, fig.cap = "Cell type assignment based on highest correlation values."}
+cor_to_call(res) %>% 
+  dplyr::rename(
+    whole_lung_cell_type = cluster,
+    split_expt_tdtomato_cell_type = type,
+         cor_val = r)
+```
+
+### get markers between elastase and saline
+
+```{r}
+clusters <- unique(so_club@meta.data$cell_types)
+treatment <- c("Elastase", "Saline")
+so_tmp <- so_club
+so_tmp$cluster_treatment <- str_c(so_club$treatment, "_", so_club$cell_types)
+
+de_res <- map(clusters, ~{
+    to_test <- str_c(treatment, "_", .x)
+    wilcoxauc(so_tmp, "cluster_treatment", groups_use = str_c(treatment, "_", .x)) %>% 
+      filter(group == to_test[1]) %>% 
+        arrange(desc(logFC))
+  })
+
+de_sig_res <- map(de_res, ~filter(.x, padj < 0.05) %>% 
+                    arrange(desc(logFC)))
+names(de_sig_res) <- clusters
+
+#de_sig_res <- c(list(Description = scbp::presto_marker_description()), de_sig_res)
+write_markers_xlsx(de_sig_res, 
+                     file.path("tables",
+                               "whole_lung_club_cells_Elastase_v_Saline_per_cell_type_significant.xlsx"),
+                   description_string = "Genes differentially expressed between elastase and saline conditions")
+
+```
+
+## tdTomato
+
+Examine SV40 WNT activity and genes correlated to gfp 
+
+
+```{r}
+library(ggridges)
+p <- get_metadata(so_tom, c("egfp-sv40")) %>% 
+  ggplot(aes(`egfp-sv40`, treatment)) +
+    geom_density_ridges(aes(fill = treatment)) + 
+  scale_fill_manual(values = palette_OkabeIto) +
+  theme_ridges() +
+  theme(legend.position = "none")
+    
+
+save_plot(file.path(fig_dir, "club_cells_wnt_egfp_sv40.pdf"), 
+          p,
+          base_asp = 1.4)
+p
+```
+
+```{r}
+genes_to_check <- rownames(so_tom)[rowSums(so_tom@assays$RNA@data > 0 ) > 5]
+all_data <- get_metadata(so_tom, genes_to_check, embedding = NULL) %>% 
+  mutate(treatment = factor(treatment, levels = c("Saline", "Elastase"))) %>% 
+  filter(`egfp-sv40` > 0,
+         str_detect(harmony_cell_type_cluster, "AT2 |AT1 |Ciliated |Club |Goblet |Other Activated Club "))
+
+elast <- filter(all_data, treatment == "Elastase")
+saline <- filter(all_data, treatment == "Saline")
+
+split_all_data <- split(all_data, all_data$harmony_coarse_cell_type)
+cor_values <- map(split_all_data,
+                  function(cluster_dat) {
+                     elast_tmp <- filter(cluster_dat, treatment == "Elastase")
+                    saline_tmp <- filter(cluster_dat, treatment == "Saline")
+                  map_dfr(genes_to_check, ~{
+  tibble(
+    gene = .x,
+    elastase = cor(elast_tmp[[.x]], elast_tmp[["egfp-sv40"]], method = "spearman"),
+    saline = cor(saline_tmp[[.x]], saline_tmp[["egfp-sv40"]], method = "spearman"))
+  }) %>% 
+  arrange(desc(elastase)) 
+                  })
+
+pwalk(list(cor_values, names(cor_values), split_all_data), 
+      function(cvs, id, cdat){
+                       elast_tmp <- filter(cdat, treatment == "Elastase")
+                    saline_tmp <- filter(cdat, treatment == "Saline")
+                    
+  plts <- map(cvs$gene[2], ~{
+  
+  bplot <- ggplot(cdat, aes_string("treatment", .x)) +
+    geom_boxplot(aes(fill = treatment)) +
+    geom_jitter() +
+    scale_fill_manual(values = palette_OkabeIto) +
+    labs(x = "") +
+    theme(legend.position = "none")
+    
+  
+  splts <- map(c("egfp-sv40"),
+      function(x){
+        ecor <- cor(elast_tmp[[.x]], elast_tmp[[x]], method = "spearman")
+        scor <- cor(saline_tmp[[.x]], saline_tmp[[x]], method = "spearman")
+        
+        text_df <- tibble(
+          treatment = factor(c("Saline", "Elastase"),levels = c("Saline", "Elastase")),
+          pearson = str_c("r = ", signif(c(scor, ecor), 3))
+        )
+        p <- ggplot(cdat, aes_string(.x, paste0("`", x, "`"))) +
+          geom_point(aes(color = treatment)) +
+          facet_wrap(~treatment) +
+          geom_text(data = text_df,
+                    aes(x = -Inf, y = -Inf, label = pearson),
+                    hjust   = -.5,
+                    vjust   = -20) +
+          scale_color_manual(values = palette_OkabeIto) +
+    theme(legend.position = "none")
+        p
+      })
+  plot_grid(plotlist = c(list(bplot), splts),
+            ncol = 3,
+            nrow = 1, rel_widths = c(0.2, 0.4, 0.4))
+})
+
+p <- plot_grid(plotlist = plts, 
+               nrow = length(plts),
+               ncol = 1)
+save_plot(str_c(id, "_cor_to_wnt_reporter.pdf"), 
+          p,
+          base_asp = 3,
+          nrow = length(plts),
+          ncol = 1)
+p
+})
+
+cor_values %>% bind_rows(.id = "cell_type") %>% write_csv(., "combined_data_wnt_reporter_correlation_values.csv")
+
+openxlsx::write.xlsx(cor_values, "combined_data_wnt_reporter_correlation_values.xlsx", overwrite = TRUE)
+```
+```{r}
+get_metadata(so_tom, "egfp-sv40", embedding = NULL) %>% 
+  mutate(treatment = factor(treatment, levels = c("Saline", "Elastase"))) %>% 
+  filter(str_detect(harmony_cell_type_cluster, "AT2 |AT1 |Ciliated |Club |Goblet |Other Activated Club ")) %>% 
+  group_by(harmony_coarse_cell_type) %>% 
+  summarize(n_cells_GFP_positive = sum(`egfp-sv40` > 0), 
+            total_cells = n(),
+            percent_positive = 100 * (n_cells_GFP_positive/ total_cells))
+
+```
+

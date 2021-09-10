@@ -460,6 +460,19 @@ save_plot(file.path(fig_dir, "cell_proportions_per_treatment_no_immune.pdf"),
           base_asp = 2)
 p
 ```
+```{r}
+counts <- props %>% 
+  select(-percent) %>% 
+  pivot_wider(names_from = name,
+              values_from = value)
+pcts <-  props %>% 
+  select(-value) %>% 
+  pivot_wider(names_from = name,
+              values_from = percent)
+
+list(counts = counts, percent = pcts) %>% 
+  openxlsx::write.xlsx(., file.path(tbls_dir, "cell_counts_epithelial_cells.xlsx"))
+```
 
 ## Compare expt 1 clusters to expt 2 
 
@@ -533,7 +546,6 @@ plot_violins(so,
 ```
 
 ```{r}
-
 plot_violins(so, 
              "harmony_cell_type_cluster", 
              transgenes, 
@@ -541,6 +553,24 @@ plot_violins(so,
              cols = palette_OkabeIto) +
   labs(x = "",
        fill = "")
+```
+```{r}
+immune_cells <- c("A. macrophage (1)", "DC (1)")
+so_no_immune <- subset(so, subset = harmony_cell_type_cluster %in% immune_cells, invert = TRUE)
+p <- plot_violins(so_no_immune, 
+             "harmony_cell_type_cluster", 
+             transgenes, 
+             split_by = "treatment_fct", 
+             cols = palette_OkabeIto) +
+  labs(x = "",
+       fill = "")
+
+p
+
+save_plot(file.path(fig_dir, "transgene_expr_violins_no_immune.pdf"),
+          p,
+          base_height = 6,
+          base_asp = 1.6)
 ```
 
 ### Mucins
@@ -598,6 +628,23 @@ plot_violins(so,
              cols = palette_OkabeIto) +
   labs(x = "",
        fill = "")
+```
+
+```{r}
+p <- plot_violins(so_no_immune, 
+             "harmony_cell_type_cluster", 
+             mucins, 
+             split_by = "treatment_fct", 
+             cols = palette_OkabeIto) +
+  labs(x = "",
+       fill = "")
+
+p
+
+save_plot(file.path(fig_dir, "mucin_expr_violins_no_immune.pdf"),
+          p,
+          base_height = 6,
+          base_asp = 1.6)
 ```
 
 ## Get markers for new cell population labels 
@@ -788,6 +835,6 @@ write_tsv(mdata_out, outname)
 ```
 
 ```{r, eval = FALSE}
-so  <- qread(file.path(obj_dir, "combined_so.qs"))
+so  <- qread(file.path(obj_dir, "combined_so2.qs"))
 ```
 

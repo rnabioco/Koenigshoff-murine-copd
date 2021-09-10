@@ -1,0 +1,189 @@
+---
+title: "Whole lung data additional analysis"
+author: "Kent Riemondy RBI"
+date: "`r Sys.Date()`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "html") })
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: false
+    theme: cosmo
+    highlight: tango
+    fig_caption: true
+    code_folding: hide
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = FALSE, 
+                      warning = FALSE,
+                      cache = FALSE,
+                      cache.lazy = FALSE)
+```
+
+
+```{r libs, cache = F}
+source(here::here("R", "utils.R"))
+
+seed_value <- 20210528
+```
+
+
+```{r}
+so <- qread("objects/so.qs")
+```
+
+
+## To do
+
+Sorry for taking so long to get back to you. 
+ 
+For the whole lung cell data set, I agree that Krt8+ should be annotated as ciliated cells. But the cluster 5 still has SFTPC expression and is more similar to ATII-3 in the combined heatmap. I would define the cluster 5 as ATII-club intermediate cells. With that, could you generate a DE gene list comparing epithelial cells of elastase vs saline. This will help to confirm what we found in the tdTomato study and human COPD sc data. For example, we found that the ATII-3 and ATII-6 in the tdTomato data set showed increased club cell marker expression after elastase treatment. Similarly, we found increased club cell feature in the COPD ATII cells in our human data. 
+ 
+Further, in this whole lung dataset. we will have a chance to investigate the interaction between the secretory (club+goblet) cells and the immune cells and mesenchymal cells. I will bug you later regarding this analysis, once I learned enough from literature, and have more specific goals to add to the manuscript. 
+ 
+I just finished reviewing the Wnt correlation gene list from the tdTomato dataset. I agree that there is no strong Wnt signature in this data set, mainly due to low GFP expression at homeostasis. And based on previous studies, the elastase treatment generally reduced the Wnt activity in the lung tissue. This could further lead to the low signature. However, my goal is to find the Wnt target genes in each cell type of the tdTomato+ cells. Would you please remove the GFP negative cells from each cell type and generate the list of gene correlated with GFP level, and show the frequency of GFP+ cells in each cell type? I expect some of the cell types, especially the AT1 and AT2 subtypes, may not have enough GFP+ cells.
+ 
+Except for above, I would like to ask for some figures/data for the manuscript. Once the first draft ready, I will schedule a meeting with you, Jay, Melanie and Chris to present.
+ 
+1.Could you send me the numbers of this bar graph? I would like to generate a figure summarized the ATII cells and average percentage of each cell type of elastase vs saline.
+
+2.Would you please generate new figures of the following ones, removing the immune cells:
+
+
+
+## Check for spink+ cells  
+
+```{r}
+library(biomaRt)
+
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+orthologs <- getBM(mart = ensembl,
+                   attributes = c("external_gene_name",
+                                  "mmusculus_homolog_associated_gene_name"))
+
+all_orthologs <- filter(orthologs,
+                    !(is.na(mmusculus_homolog_associated_gene_name) | mmusculus_homolog_associated_gene_name == "")) 
+ortholog  <- orthologs %>% 
+  group_by(external_gene_name) %>%
+  mutate(n_orthos_h = n()) %>%
+  group_by(mmusculus_homolog_associated_gene_name) %>%
+  mutate(n_orthos_m = n()) %>%
+  filter(n_orthos_h == 1, n_orthos_m == 1) %>%
+  dplyr::select(-starts_with("n_orthos")) %>%
+  ungroup()
+
+orthologs <- mutate(orthologs,
+                    ortho_id = str_c(external_gene_name, ":",
+                                     mmusculus_homolog_associated_gene_name))
+orthologs <- dplyr::rename(orthologs,
+                           human_gene_symbol = external_gene_name,
+                           mouse_gene_symbol = mmusculus_homolog_associated_gene_name)
+all_orthologs <- dplyr::rename(all_orthologs, 
+                           human_gene_symbol = external_gene_name,
+                           mouse_gene_symbol = mmusculus_homolog_associated_gene_name)
+                               
+spink_sig <- list(c("NPC2",
+                "SPINK2",
+                "SPAG11B",
+                "PTGDS",
+                "DEFB118",
+                "CD52",
+                "LCN6",
+                "SPAG11A",
+                "DDIT3",
+                "CLU",
+                "LCN12",
+                "MUC15",
+                "SMIM24")) %>% 
+  map(~tibble(human_gene_symbol = .x) %>% 
+        inner_join(all_orthologs) %>% 
+        pull(mouse_gene_symbol) %>% 
+        unique())
+
+
+so <- AddModuleScore(so, spink_sig, name = 'Spink_signature')
+
+p <- plot_umap(so, "Spink_signature1", sorted = "random", pt_size = 0.000001)
+p
+
+save_plot(file.path(fig_dir, "spink2_signature_umap.pdf"),
+          p,
+          base_asp = 1.4)
+```
+
+
+```{r}
+expr_genes <-  spink_sig[[1]][spink_sig[[1]] %in% rownames(so)]
+expr_gene_list <- list(spink2_signature = expr_genes)
+plot_montage(so, expr_gene_list, outfile = file.path(fig_dir, "spink2_marker_umap_summary.pdf"))
+```
+
+```{r}
+color_fun <- grDevices::colorRampPalette(RColorBrewer::brewer.pal(12, "Paired"))
+cols_to_use <- color_fun(length(unique(so$coarse_cell_type)))
+
+p <- plot_violins(so, "coarse_cell_type", 
+             features = "Spink_signature1", 
+             split_by = "treatment",
+             cols = cols_to_use) 
+p
+save_plot(file.path(fig_dir, "spink2_signature_by_cell_type_violins.pdf"),
+          p,
+          base_asp = 2,
+          base_height = 5)
+```
+
+```{r}
+color_fun <- grDevices::colorRampPalette(RColorBrewer::brewer.pal(12, "Paired"))
+cols_to_use <- color_fun(length(unique(so$coarse_cell_type)))
+
+p <- plot_violins(so, "coarse_cell_type", 
+             features = spink_sig[[1]], 
+             split_by = "treatment",
+             cols = cols_to_use) 
+
+p
+save_plot(file.path(fig_dir, "spink2_genes_by_cell_type_violins.pdf"),
+          p,
+          base_asp = 1.75,
+          base_height = 7)
+
+```
+
+## Examine DE between elastase and saline for epithelial cells
+
+### get markers between elastase and saline
+
+```{r}
+clusters <- unique(so@meta.data$coarse_cell_type)
+treatment <- c("Elastase", "Saline")
+so_tmp <- so
+so_tmp$cluster_treatment <- str_c(so$treatment, "_", so$coarse_cell_type)
+
+de_res <- map(clusters, ~{
+    to_test <- str_c(treatment, "_", .x)
+    wilcoxauc(so_tmp, "cluster_treatment", groups_use = str_c(treatment, "_", .x)) %>% 
+      filter(group == to_test[1]) %>% 
+        arrange(desc(logFC))
+  })
+
+de_sig_res <- map(de_res, ~filter(.x, padj < 0.05) %>% 
+                    arrange(padj) %>% 
+                    dplyr::slice(1:200) %>% 
+                    arrange(desc(abs(logFC))))
+names(de_sig_res) <- clusters
+
+write_markers_xlsx(de_sig_res, 
+                     file.path("tables",
+                               "whole_lung_all_cells_Elastase_v_Saline_per_cell_type_top200_significant.xlsx"),
+                   description_string = "Genes differentially expressed between elastase and saline conditions")
+
+rm(so_tmp)
+```
+
+
+
