@@ -33,7 +33,7 @@ seed_value <- 20210528
 
 
 ```{r}
-so <- qread("objects/so.qs")
+so <- qread("objects/so_v2.qs")
 ```
 
 
@@ -159,31 +159,47 @@ save_plot(file.path(fig_dir, "spink2_genes_by_cell_type_violins.pdf"),
 ### get markers between elastase and saline
 
 ```{r}
-clusters <- unique(so@meta.data$coarse_cell_type)
-treatment <- c("Elastase", "Saline")
-so_tmp <- so
-so_tmp$cluster_treatment <- str_c(so$treatment, "_", so$coarse_cell_type)
+library(scran)
+lung_sce <- DietSeurat(so) %>% as.SingleCellExperiment()
 
-de_res <- map(clusters, ~{
-    to_test <- str_c(treatment, "_", .x)
-    wilcoxauc(so_tmp, "cluster_treatment", groups_use = str_c(treatment, "_", .x)) %>% 
-      filter(group == to_test[1]) %>% 
-        arrange(desc(logFC))
-  })
+tmp <- sumCountsAcrossCells(lung_sce, 
+                            DataFrame(sample = lung_sce$sample,
+                                      treatment = lung_sce$treatment,
+                                      cluster = lung_sce$coarse_cell_type))
 
-de_sig_res <- map(de_res, ~filter(.x, padj < 0.05) %>% 
-                    arrange(padj) %>% 
-                    dplyr::slice(1:200) %>% 
-                    arrange(desc(abs(logFC))))
-names(de_sig_res) <- clusters
+out <- pseudoBulkDGE(tmp, 
+                     label=tmp$cluster,
+                     condition=tmp$treatment,
+                     design= ~treatment,
+                     coef = "treatmentElastase")
+de_res <- map(as.list(out), 
+              ~as.data.frame(.x) %>%
+                rownames_to_column("gene") %>% 
+                arrange(FDR)) 
 
-write_markers_xlsx(de_sig_res, 
-                     file.path("tables",
-                               "whole_lung_all_cells_Elastase_v_Saline_per_cell_type_top200_significant.xlsx"),
-                   description_string = "Genes differentially expressed between elastase and saline conditions")
+de_sig_res <- map(as.list(out), 
+                  ~as.data.frame(.x) %>%
+                    rownames_to_column("gene") %>% 
+                    arrange(FDR) %>% 
+                    filter(FDR < 0.05)) 
 
-rm(so_tmp)
+scran_marker_description <- tribble(
+  ~Columns, ~Description,
+  "Genes differentially expressed between Elastase and Saline cell types", "", 
+  "", "",
+  "gene", "gene symbol",
+  "logFC", "log2-fold-change",
+  "logCPM", "log2 counts per million",
+  "F", "F-statistic",
+  "PValue", "Pvalue from edgeR pseudoBulk test",
+  "FDR", "adjusted pvalue"
+  
+)
+de_res <- map(de_res, ~set_xlsx_class(.x, "gene", "Text"))
+names(de_res) <- str_sub(names(de_res), 1, 31) %>% str_replace_all("[[:punct:]]+", "")        
+openxlsx::write.xlsx(c(README = list(scran_marker_description), 
+                       de_res), 
+                     file.path("tables", "whole_lung_all_cells_Elastase_v_Saline_per_coarse_cell_type_edgeR.xlsx"),
+                     overwrite = TRUE)
+
 ```
-
-
-

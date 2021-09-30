@@ -299,7 +299,7 @@ plt
 
 Overall the sample quality looks quite excellent, with a good # of cells captured, low # of cells with high mitochondrial reads, and low background from lysed cells.
 
-Suggest using some minor filters to remove cells with outlier mitochondrial UMIs (>3 MAD or > 20%), > 20K UMI or < 500 UMIs, > 5000 genes detected . 
+Suggest using some minor filters to remove cells with outlier mitochondrial UMIs (>3 MAD or > 20%), > 50K UMI or < 1000 UMIs, > 5000 or < 1000 genes detected . 
 
 ```{r rows.print = 30, cache.lazy=F}
 
@@ -325,13 +325,22 @@ prev_count <- cur_count
 
 so <- subset(so, subset = nFeature_RNA < 7500)
 cur_count <- dplyr::count(so@meta.data, sample)
+filter_summary$"Too high # of genes" <- cur_count %>%
+  left_join(prev_count, by = "sample") %>% 
+  mutate(n = n.y - n.x) %>% 
+  dplyr::select(sample, n)
+prev_count <- cur_count
+
+so <- subset(so, subset = nFeature_RNA > 750)
+cur_count <- dplyr::count(so@meta.data, sample)
 filter_summary$"Too low # of genes" <- cur_count %>%
   left_join(prev_count, by = "sample") %>% 
   mutate(n = n.y - n.x) %>% 
   dplyr::select(sample, n)
 prev_count <- cur_count
 
-so <- subset(so, subset = nCount_RNA > 500)
+
+so <- subset(so, subset = nCount_RNA > 1000)
 cur_count <- dplyr::count(so@meta.data, sample)
 filter_summary$"Too low # of UMIs" <- cur_count %>%
   left_join(prev_count, by = "sample") %>% 
@@ -407,7 +416,7 @@ so <- FindClusters(so,
 ```
 
 ```{r}
-so <- qread("objects/so.qs", nthreads = 4)
+so <- qread("objects/so_v2.qs", nthreads = 4)
 ```
 
 ### by treatment
@@ -497,7 +506,7 @@ hm
 ```
 
 
-Using these reference datasets as a guide, each cluster will be assigned to the most correlated cell type in the reference. Most clusters have very high correlation to the cell types in the reference lung dataset, however the clusters correlated to the club cells generally have lower (0.5 - 0.6) correlation. **In previous experiments these correlation values were > 0.8 for club cells** 
+Using these reference datasets as a guide, each cluster will be assigned to the most correlated cell type in the reference. Most clusters have very high correlation to the cell types in the reference lung dataset. **After additional QC, there are now populations that have high > 0.7 correlation for club cells** 
 
 ```{r, rows.print = 15, fig.cap = "Cell type assignment based on highest correlation values."}
 cor_to_call(res) %>% 
@@ -542,10 +551,7 @@ save_plot(file.path(fig_dir, "umap_of_annotated_cell_types.pdf"),
 p
 ```
 
-
-Note that using the Strunz et al reference did not confidently identify a club cell population. 
-
-Next I'll try correlating against the reference per cell rather than per cluster. Shown below are the correlation cooefficients computed per cell for each indicated cell type from the reference Strunz et al dataset.
+Next I'll also try correlating against the reference per cell rather than per cluster. Shown below are the correlation cooefficients computed per cell for each indicated cell type from the reference Strunz et al dataset.
 
 ```{r}
 res <- clustify(so, 
@@ -554,7 +560,7 @@ res <- clustify(so,
                 query_genes = VariableFeatures(so),
                 ref_mat = ref,
                 obj_out = FALSE,
-                compute_method = "spearman")
+                compute_method = "pearson")
 
 plt_dat <- rownames_to_column(as.data.frame(res), "cell") %>% 
   left_join(get_metadata(so)) 
@@ -564,9 +570,7 @@ map(str_subset(colnames(res), "[Cc]lub|[Gg]oblet"),
       geom_point(aes_string(color = str_c("`", .x, "`")), shape = '.') +
       scale_color_continuous(type = "viridis"))
 ```
-
-
-There doesn't appear to be a very clear rare distinct population with high correlation. The populations annotated as goblet or ciliated are correlated to the club cell gene expression, but another distinct set of cells is not clearly observed. 
+ 
 
 ### Show known cell type markers
 
@@ -672,7 +676,7 @@ plot_montage(so,
              outfile = file.path(fig_dir, "known_marker_umap_summary.pdf"))
 ```
 
-The club cells are expected to be rare and based on marker gene expression there isn't a very strong enrichment for club cell markers in any large cluster. `Scgb1a1` is broadly expressed, but only a small subset seems to express very highly. 
+The club cells are expected to be rare and based on marker gene expression there is no enrichment for club cell markers in any large cluster. `Scgb1a1` is broadly expressed, but only a small subset seems to express very highly. There is 1 cluster that matches ciliated cells with high club cell markers. 
 
 ## Compare club cells between experiments
 
@@ -706,7 +710,7 @@ a <- dev.off(); rm(a)
 
 hm
 ```
-Shown below are the highest correlated cell type for each cluster. Note that the clusters most correlated to club cells have generally low correlation values and are likely spurious correlations. 
+Shown below are the highest correlated cell type for each cluster. Note that the clusters with highest correlation to club cells have generally low correlation values and are likely spurious correlations. 
 
 ```{r, rows.print = 15, fig.cap = "Cell type assignment based on highest correlation values."}
 cor_to_call(res) %>% 
@@ -739,13 +743,13 @@ p <- plot_umap(so,
 p
 ```
 
-There are two potential club cell clusters, annotated as goblet and activated club cells. 
+There are two  club cell clusters, annotated as goblet and club cells. 
 
 ```{r}
-club_cell_types <- str_subset(unique(so$expt_cell_type), "Club|Goblet")
+club_cell_types <- str_subset(unique(so$coarse_cell_type), "[Cc]lub|[Gg]oblet")
 
 p <- plot_umap(so,
-  "expt_cell_type",
+  "coarse_cell_type",
   group = "treatment",
   legend_title = "",
   highlight = club_cell_types
@@ -776,9 +780,9 @@ split(old_mkrs, old_mkrs$group) %>%
 ```
 
 ## Recluster club-like cells
-
+The goblet and club cells will next be reclustered separately. 
 ```{r, eval = FALSE}
-club_so <- subset(so, subset = expt_cell_type %in% club_cell_types)
+club_so <- subset(so, subset = coarse_cell_type %in% club_cell_types)
 club_so <- FindVariableFeatures(club_so, nfeatures = 1000) %>% 
   ScaleData() %>% 
   RunPCA() %>% 
@@ -788,9 +792,11 @@ club_so <- FindVariableFeatures(club_so, nfeatures = 1000) %>%
 ```
 
 ```{r}
-club_so <- qread("objects/club_so.qs", nthreads = 4)
-plot_umap(club_so, "seurat_clusters", group = "treatment", pt_size = 0.5)
+club_so <- qread("objects/club_so_v2.qs", nthreads = 4)
+plot_umap(club_so, "seurat_clusters", group = "sample", pt_size = 0.5)
 ```
+
+Note there is cluster (#3) that is only found in the E2 sample. 
 
 ```{r}
 plot_umap(club_so, c("Muc5b", "Muc5ac"), group = "treatment", pt_size = 0.5)
@@ -811,6 +817,24 @@ topx <- mkrs$mkrs %>%
   group_by(group) %>% 
   arrange(padj, desc(logFC)) %>% 
   dplyr::slice(1:10) 
+```
+
+```{r}
+library(scran)
+sce <- DietSeurat(club_so) %>% as.SingleCellExperiment()
+m.out <- findMarkers(sce, 
+                     groups = sce$seurat_clusters,
+                     block=sce$sample,
+                     direction="up") 
+
+topx <- map(as.list(m.out), ~.x %>% as.data.frame() %>% 
+              filter(Top < 10) %>% 
+              rownames_to_column("feature")) %>% 
+  bind_rows(.id = "group") %>% 
+  group_by(group) %>% 
+  dplyr::slice(1:10)
+  
+
 ```
 
 Shown below are the top 10 markers of each cell population in a table and heatmap.
@@ -849,6 +873,7 @@ hm
 ## Find populations that differ between treatments
 
 Lastly I'll examine the whole lung dataset to find differences in cell populations between elastase and saline. 
+
 ```{r}
 library(edgeR)
 abundances <- table(so$refined_clusters, so$orig.ident) 
@@ -872,7 +897,7 @@ da_res <- topTags(res) %>%
 
 ```{r}
 to_plot <- da_res %>% 
-    filter(FDR < 0.01) %>% 
+    filter(FDR < 0.05) %>% 
   pull(refined_clusters)
 
 to_plot_pretty <- filter(so@meta.data, refined_clusters %in% to_plot) %>% 
@@ -885,7 +910,7 @@ to_plot_pretty <- filter(so@meta.data, refined_clusters %in% to_plot) %>%
 
 cell_counts <- get_cell_count_matrix(so, "orig.ident", "refined_clusters") 
 cell_props <- 100 * (t(t(cell_counts) / rowSums(cell_counts)))
-cell_props <- cell_props[, to_plot]
+cell_props <- cell_props[, to_plot, drop = F]
 colnames(cell_props) <- to_plot_pretty
 Heatmap(cell_props,
         name = "percent of cells", 
@@ -894,21 +919,20 @@ Heatmap(cell_props,
 ```
 
 ```{r}
-p <- plot_umap(so, "refined_clusters", 
+p <- plot_umap(so, "refined_clusters",
           group = "orig.ident",
           highlight = to_plot)
 p
 ```
 
 
+
 ## Conclusions
 
-Based on these analyses it is unclear if there are enough club cells to confidently identify in this dataset. The clusters most highly correlated to club cells still have low correlation values, and the markers don't clearly identify them as club cells (at least as compared to previous experiments). 
-
-Closer examination of the cell subsets annotated as "activated" or goblet, have very little mucin expression. 
+Based on these re-analyses it is now more clear that there are club cells confidently identified in this dataset, however their are not very many of these cells (462). 
 
 ```{r, eval = FALSE}
-qsave(so, "objects/so.qs")
-qsave(club_so, "objects/club_so.qs")
+qsave(so, "objects/so_v2.qs")
+qsave(club_so, "objects/club_so_v2.qs")
 ```
 

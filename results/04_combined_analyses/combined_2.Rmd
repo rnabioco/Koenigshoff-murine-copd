@@ -55,7 +55,8 @@ Please let me know if you have any question.
 
 ```{r}
 so_fns <- list(
-  whole_lung = "../02_whole_lung/objects/club_so.qs",
+  whole_lung =  "../02_whole_lung/objects/so.qs",
+  whole_lung_club = "../02_whole_lung/objects/club_so.qs",
   tdtomato = "objects/combined_so2.qs"
 )
 ```
@@ -63,7 +64,13 @@ so_fns <- list(
 ## Whole lung
 
 ```{r}
-so_club <- qread(so_fns$whole_lung)
+so_lung <- qread(so_fns$whole_lung)
+```
+
+## Whole lung club
+
+```{r}
+so_club <- qread(so_fns$whole_lung_club)
 so_tom <- qread(so_fns$tdtomato)
 ```
 
@@ -290,4 +297,16 @@ get_metadata(so_tom, "egfp-sv40", embedding = NULL) %>%
             percent_positive = 100 * (n_cells_GFP_positive/ total_cells))
 
 ```
+
+## Examine Ly6i/a expression
+
+```{r}
+p <- plot_violins(so_tom, "harmony_cell_type_cluster", c("Ly6a", "Ly6i"), split_by = "treatment") +
+  labs(x="",
+       fill = "")
+
+save_plot(file.path(fig_dir, "ly6ai_expression_tdtomato.pdf"), p, base_asp = 1.5, base_height = 5)
+```
+
+
 
