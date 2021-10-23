@@ -203,3 +203,163 @@ openxlsx::write.xlsx(c(README = list(scran_marker_description),
                      overwrite = TRUE)
 
 ```
+
+Check on unassigned cells, compute markers per refined clsuters. Cluster 31 is a sample specific cluster (E1), check on markers. 
+
+```{r}
+mkrs <- get_marker_summaries(so, "refined_clusters", outdir = mkrs_dir, prefix = "whole_lung_refined")
+```
+
+```{r}
+library(patchwork)
+
+p1 <- plot_umap(so, c("coarse_cell_type"), group = "orig.ident", sorted = 'random')
+
+p2 <- plot_umap(so, c("refined_clusters"), sorted = 'random', label_text = T, label_col = 'black', ggrepel_opts = list(force = 0))
+p3 <- plot_umap(so, c("Scgb1a1", "Scgb3a2", "Msln", "Slurp1"), sorted = 'random') %>% 
+  plot_grid(plotlist = ., nrow = 2, ncol = 2)
+
+save_plot(file.path(fig_dir, "umap_by_sample_cell_type.pdf"),
+          p1,
+          base_asp = 2.5, base_height = 5)
+
+save_plot(file.path(fig_dir, "umap_by_refined_clusters.pdf"),
+          p2,
+          base_asp = 1.75, base_height = 5)
+
+save_plot(file.path(fig_dir, "umap_by_various_markers.pdf"),
+          p3,
+          base_asp = 1.5, 
+          nrow = 2,
+          ncol = 2)
+```
+
+
+
+```{r}
+so_at2 <- subset(so, subset = coarse_cell_type == "At2 Cells")
+plot_umap(so_at2, "refined_clusters", group = "orig.ident")
+```
+Reprocess the AT2 cells to identify additional subpopulations.
+
+```{r}
+so_at2 <- FindVariableFeatures(so_at2) %>% 
+  ScaleData() %>% 
+  RunPCA(seed.use =seed_value) 
+
+ElbowPlot(so_at2, ndims = 50)
+``` 
+
+```{r}
+so_at2 <- FindNeighbors(so_at2, dims = 1:35) %>% 
+  FindClusters(res = c(0.3, 0.5, 0.7, 0.9), 
+               random.seed = seed_value) %>% 
+  RunUMAP(., dims = 1:35, seed.use = seed_value)
+```
+
+```{r}
+plot_umap(so_at2, str_c("RNA_snn_res.", c(0.3, 0.5, 0.7, 0.9)), group = "treatment")
+```
+```{r}
+plot_umap(so_at2, str_c("RNA_snn_res.", c(0.3, 0.5, 0.7, 0.9)), group = "orig.ident")
+```
+
+```{r}
+mkrs <- get_marker_summaries(so_at2, "RNA_snn_res.0.3", outdir = mkrs_dir, prefix = "whole_lung_at2_recluster")
+```
+
+```{r}
+lung_sce <- DietSeurat(so_at2) %>% as.SingleCellExperiment()
+
+tmp <- sumCountsAcrossCells(lung_sce, 
+                            DataFrame(sample = lung_sce$sample,
+                                      treatment = lung_sce$treatment,
+                                      cluster = lung_sce$RNA_snn_res.0.3))
+
+out <- pseudoBulkDGE(tmp, 
+                     label=tmp$cluster,
+                     condition=tmp$treatment,
+                     design= ~treatment,
+                     coef = "treatmentElastase")
+de_res_e_v_s <- map(as.list(out), 
+              ~as.data.frame(.x) %>%
+                rownames_to_column("gene") %>% 
+                arrange(FDR)) 
+
+tmp <- sumCountsAcrossCells(lung_sce, 
+                            DataFrame(sample = lung_sce$sample,
+                                      treatment = lung_sce$treatment,
+                                      cluster = lung_sce$coarse_cell_type))
+
+out <- pseudoBulkDGE(tmp, 
+                     label=tmp$cluster,
+                     condition=tmp$treatment,
+                     design= ~treatment,
+                     coef = "treatmentElastase")
+
+de_res_e_v_s_all_cells <- map(as.list(out), 
+              ~as.data.frame(.x) %>%
+                rownames_to_column("gene") %>% 
+                arrange(FDR)) 
+
+design <- model.matrix(~lung_sce$sample)
+design <- design[,-1,drop=FALSE]
+
+m.alt <- findMarkers(lung_sce,
+                     groups = lung_sce$RNA_snn_res.0.3, 
+                     design=design, 
+                     direction="up", 
+                     pval.type = 'some')
+
+
+scran_marker_description <- tribble(
+  ~Columns, ~Description,
+  "Genes differentially expressed between Elastase and Saline cell types", "", 
+  "", "",
+  "gene", "gene symbol",
+  "logFC", "log2-fold-change",
+  "logCPM", "log2 counts per million",
+  "F", "F-statistic",
+  "PValue", "Pvalue from edgeR pseudoBulk test",
+  "FDR", "adjusted pvalue"
+  
+)
+de_res <- c(de_res_e_v_s, de_res_e_v_s_all_cells)
+de_res <- map(de_res, ~set_xlsx_class(.x, "gene", "Text"))
+names(de_res) <- str_sub(names(de_res), 1, 31) %>% str_replace_all("[[:punct:]]+", "")        
+openxlsx::write.xlsx(c(README = list(scran_marker_description), 
+                       de_res), 
+                     file.path("tables", "whole_lung_at2_cells_Elastase_v_Saline_per_refined_clustering_edgeR.xlsx"),
+                     overwrite = TRUE)
+
+
+scran_marker_description2 <- tribble(
+  ~Columns, ~Description,
+  "Genes differentially expressed between each cluster and other cells", "", 
+  "", "",
+  "gene", "gene symbol",
+  "PValue", "Pvalue from t.test, summarized from pairwise comparisions across all clusters",
+  "FDR", "adjusted pvalue",
+  "summary.logFC", "log2-fold-change,  summarized across all clusters",
+  "logFC.X", "log2 fold change between current cluster, and indicated cluster "
+)
+de_res<- map(as.list(m.alt), 
+              ~as.data.frame(.x) %>%
+                rownames_to_column("gene") %>% 
+                arrange(FDR)) 
+
+de_res <- map(de_res, ~set_xlsx_class(.x, "gene", "Text"))
+names(de_res) <- str_sub(names(de_res), 1, 31) %>% str_replace_all("[[:punct:]]+", "")        
+openxlsx::write.xlsx(c(README = list(scran_marker_description2), 
+                       de_res), 
+                     file.path("tables", "whole_lung_at2_cells_per_refined_clustering_ttest.xlsx"),
+                     overwrite = TRUE)
+
+de_df <- bind_rows(de_res, .id = "group")
+write_tsv(de_df, "markers/whole_lung_at2_recluster_scran_markers.tsv")
+```
+
+```{r}
+qsave(so_at2, "objects/so_at2.qs")
+```
+
