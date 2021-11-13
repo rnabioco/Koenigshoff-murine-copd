@@ -263,8 +263,17 @@ plot_umap(so_at2, str_c("RNA_snn_res.", c(0.3, 0.5, 0.7, 0.9)), group = "treatme
 ```{r}
 plot_umap(so_at2, str_c("RNA_snn_res.", c(0.3, 0.5, 0.7, 0.9)), group = "orig.ident")
 ```
+```{r}
+so_at2 <- FindClusters(so_at2, 
+             res = c(1.1, 1.3, 1.5), 
+               random.seed = seed_value)
+
+plot_umap(so_at2, str_c("RNA_snn_res.", c(1.1, 1.3, 1.5)), group = "treatment")
+```
 
 ```{r}
+mkrs <- get_marker_summaries(so_at2, "RNA_snn_res.1.5", outdir = mkrs_dir, prefix = "whole_lung_at2_further_refined")
+
 mkrs <- get_marker_summaries(so_at2, "RNA_snn_res.0.3", outdir = mkrs_dir, prefix = "whole_lung_at2_recluster")
 ```
 
@@ -360,6 +369,100 @@ write_tsv(de_df, "markers/whole_lung_at2_recluster_scran_markers.tsv")
 ```
 
 ```{r}
+lung_sce <- DietSeurat(so_at2) %>% as.SingleCellExperiment()
+
+tmp <- sumCountsAcrossCells(lung_sce, 
+                            DataFrame(sample = lung_sce$sample,
+                                      treatment = lung_sce$treatment,
+                                      cluster = lung_sce$RNA_snn_res.1.5))
+
+out <- pseudoBulkDGE(tmp, 
+                     label=tmp$cluster,
+                     condition=tmp$treatment,
+                     design= ~treatment,
+                     coef = "treatmentElastase")
+de_res_e_v_s <- map(as.list(out), 
+              ~as.data.frame(.x) %>%
+                rownames_to_column("gene") %>% 
+                arrange(FDR)) 
+
+tmp <- sumCountsAcrossCells(lung_sce, 
+                            DataFrame(sample = lung_sce$sample,
+                                      treatment = lung_sce$treatment,
+                                      cluster = lung_sce$coarse_cell_type))
+
+out <- pseudoBulkDGE(tmp, 
+                     label=tmp$cluster,
+                     condition=tmp$treatment,
+                     design= ~treatment,
+                     coef = "treatmentElastase")
+
+de_res_e_v_s_all_cells <- map(as.list(out), 
+              ~as.data.frame(.x) %>%
+                rownames_to_column("gene") %>% 
+                arrange(FDR)) 
+
+design <- model.matrix(~lung_sce$sample)
+design <- design[,-1,drop=FALSE]
+
+m.alt <- findMarkers(lung_sce,
+                     groups = lung_sce$RNA_snn_res.1.5, 
+                     design=design, 
+                     direction="up", 
+                     pval.type = 'some')
+
+
+scran_marker_description <- tribble(
+  ~Columns, ~Description,
+  "Genes differentially expressed between Elastase and Saline cell types", "", 
+  "", "",
+  "gene", "gene symbol",
+  "logFC", "log2-fold-change",
+  "logCPM", "log2 counts per million",
+  "F", "F-statistic",
+  "PValue", "Pvalue from edgeR pseudoBulk test",
+  "FDR", "adjusted pvalue"
+  
+)
+de_res <- c(de_res_e_v_s, de_res_e_v_s_all_cells)
+de_res <- map(de_res, ~set_xlsx_class(.x, "gene", "Text"))
+names(de_res) <- str_sub(names(de_res), 1, 31) %>% str_replace_all("[[:punct:]]+", "")        
+openxlsx::write.xlsx(c(README = list(scran_marker_description), 
+                       de_res), 
+                     file.path("tables", "whole_lung_at2_cells_Elastase_v_Saline_per_further_refined_clustering_edgeR.xlsx"),
+                     overwrite = TRUE)
+
+
+scran_marker_description2 <- tribble(
+  ~Columns, ~Description,
+  "Genes differentially expressed between each cluster and other cells", "", 
+  "", "",
+  "gene", "gene symbol",
+  "PValue", "Pvalue from t.test, summarized from pairwise comparisions across all clusters",
+  "FDR", "adjusted pvalue",
+  "summary.logFC", "log2-fold-change,  summarized across all clusters",
+  "logFC.X", "log2 fold change between current cluster, and indicated cluster "
+)
+de_res<- map(as.list(m.alt), 
+              ~as.data.frame(.x) %>%
+                rownames_to_column("gene") %>% 
+                arrange(FDR) %>% 
+               filter(FDR < 0.1)) 
+
+de_res <- map(de_res, ~set_xlsx_class(.x, "gene", "Text"))
+names(de_res) <- str_sub(names(de_res), 1, 31) %>% str_replace_all("[[:punct:]]+", "")        
+openxlsx::write.xlsx(c(README = list(scran_marker_description2), 
+                       de_res), 
+                     file.path("tables", "whole_lung_at2_cells_per_further_refined_clustering_ttest.xlsx"),
+                     overwrite = TRUE)
+
+de_df <- bind_rows(de_res, .id = "group")
+write_tsv(de_df, "markers/whole_lung_at2_further_recluster_scran_markers.tsv")
+```
+
+
+```{r}
 qsave(so_at2, "objects/so_at2.qs")
+#so_at2 <- qread("objects/so_at2.qs")
 ```
 

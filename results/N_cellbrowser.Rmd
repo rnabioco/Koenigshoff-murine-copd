@@ -228,7 +228,8 @@ cols_to_keep <- c(
   `percent of UMIs as mitochondria` = "percent.mt",
   Treatment = "treatment",
   Sample = "sample",
-  `Refined clusters` = "RNA_snn_res.0.3"
+  `Refined clusters` = "RNA_snn_res.0.3",
+  `Further refined clusters` = "RNA_snn_res.1.5"
   )
 
 make_cellbrowser(so, 
@@ -242,8 +243,8 @@ make_cellbrowser(so,
                     "Sample"), 
                  project = "Whole-lung-AT2",
                  outdir = cb_outdir,
-                 marker_file = "02_whole_lung/markers/whole_lung_at2_recluster_scran_markers.tsv",
-                 ident = "Refined clusters",
+                 marker_file = "02_whole_lung/markers/whole_lung_at2_further_recluster_scran_markers.tsv",
+                 ident = "Further refined clusters",
                  embeddings = def_embeddings(so),
                  skip_expr_matrix = TRUE,
                  config = list(priority = 1,  
