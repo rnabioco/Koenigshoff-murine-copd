@@ -788,6 +788,48 @@ de_sig_res_tbls <- c(list(Description = scbp::presto_marker_description()), de_s
 openxlsx::write.xlsx(de_sig_res, file.path("tables", "Elastase_v_Saline_per_cell_type_significant.xlsx"))
 ```
 
+
+## Get de genes between elastase and saline
+
+
+```{r}
+to_keep <- colnames(so_epi)[as.vector(so_epi@assays$RNA["egfp-sv40", ] > 0)]
+so_epi_gfp <- so_epi[, to_keep]
+clusters <- unique(so_epi_gfp@meta.data$harmony_cell_type_cluster)
+treatment <- as.character(unique(so_epi_gfp@meta.data$treatment))
+so_tmp <- so_epi_gfp
+so_tmp$cluster_treatment <- str_c(so_epi_gfp$treatment, 
+                                  "_",
+                                  so_epi_gfp$harmony_cell_type_cluster)
+
+de_res <- map(clusters, ~{
+    to_test <- str_c(treatment, "_", .x)
+    wilcoxauc(so_tmp, "cluster_treatment", groups_use = str_c(treatment, "_", .x)) %>% 
+      filter(group == to_test[1]) %>% 
+        arrange(desc(logFC))
+  })
+names(de_res) <- clusters
+
+de_gfp_res <- map_dfr(de_res, 
+                  ~filter(.x, feature == "egfp-sv40"))
+
+de_res <- map(clusters, ~{
+    to_test <- str_c(treatment, "_", .x)
+    wilcoxauc(so_tmp, "cluster_treatment", groups_use = str_c(treatment, "_", .x)) %>% 
+      filter(group == to_test[2]) %>% 
+        arrange(desc(logFC))
+  })
+names(de_res) <- clusters
+
+de_gfp_res_inv <- map_dfr(de_res, 
+                  ~filter(.x, feature == "egfp-sv40"))
+
+de_gfp_res <- bind_rows(de_gfp_res, de_gfp_res_inv)
+
+de_gfp_res %>% select(feature, group, avgExpr, logFC, pval, padj) %>% 
+  write_csv("tables/egfp_saline_cells_de.csv")
+```
+
 ```{r}
 plot_harmony(so, "harmony_cell_type_cluster")
 ```
@@ -836,5 +878,66 @@ write_tsv(mdata_out, outname)
 
 ```{r, eval = FALSE}
 so  <- qread(file.path(obj_dir, "combined_so2.qs"))
+```
+
+```{r, fig.width = 7, fig.height=3}
+plot_umap(so, c("sample", "harmony_cell_type_cluster")) %>% 
+  plot_grid(plotlist = ., ncol = 2)
+```
+
+```{r}
+genes_to_plot <- c("Scgb1a1",
+                   "Scgb3a1",
+                   "Scgb3a2",
+                   "Muc5b",
+                   "Sftpc",
+                   "Sftpb",
+                   "Ly6i")
+
+cells_to_keep <- c(
+  "AT2 (1)",
+  "AT2 (2)",
+  "AT2 (3)",
+  "AT2 (4)",
+  "AT2 (5)",
+  "AT2 (6)",
+  "Goblet (1)",
+  "Club (1)",
+  "Other Activated Club Cells (1)")
+
+ct_order <- paste0(rep(cells_to_keep, each = 2), "-", c("Saline", "Elastase"))
+Idents(so) <- "harmony_cell_type_cluster"
+so_sub <- subset(so, subset = harmony_cell_type_cluster %in% cells_to_keep)
+so_sub$harmony_cell_type_cluster <- factor(so_sub$harmony_cell_type_cluster, 
+                                           levels = cells_to_keep)
+
+so_sub$cluster_by_treatment <- paste0(so_sub$harmony_cell_type_cluster, "-", so_sub$treatment)
+so_sub$cluster_by_treatment <- factor(so_sub$cluster_by_treatment, levels = ct_order)
+Idents(so_sub) <- "cluster_by_treatment"
+p <- DotPlot(so_sub, 
+        features = genes_to_plot, 
+      #  group.by = "cluster_by_treatment",
+        cluster.idents = T)  
+#  scale_y_
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+sce <- as.SingleCellExperiment(so_sub)
+
+sce$cluster_by_treatment <-  factor(so_sub$cluster_by_treatment, levels = rev(ct_order))
+library(scater)
+p <- plotDots(sce, 
+         features =  genes_to_plot, 
+         group = "cluster_by_treatment",
+         exprs_values = "logcounts") + 
+  coord_flip() +
+  labs(x = NULL, y = NULL) + 
+   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+save_plot(file.path(fig_dir, "selected_marker_dotplot.pdf"),
+          p,  
+          base_height = 5,
+          base_asp = 1.5)
+p
+
+p$data %>% write_csv(file.path(fig_dir, "selected_marker_dotplot.csv"))
 ```
 
