@@ -288,7 +288,7 @@ cor_values %>% bind_rows(.id = "cell_type") %>% write_csv(., "combined_data_wnt_
 openxlsx::write.xlsx(cor_values, "combined_data_wnt_reporter_correlation_values.xlsx", overwrite = TRUE)
 ```
 ```{r}
-get_metadata(so_tom, "egfp-sv40", embedding = NULL) %>% 
+all_cells <- get_metadata(so_tom, "egfp-sv40", embedding = NULL) %>% 
   mutate(treatment = factor(treatment, levels = c("Saline", "Elastase"))) %>% 
   filter(str_detect(harmony_cell_type_cluster, "AT2 |AT1 |Ciliated |Club |Goblet |Other Activated Club ")) %>% 
   group_by(harmony_coarse_cell_type) %>% 
@@ -296,6 +296,26 @@ get_metadata(so_tom, "egfp-sv40", embedding = NULL) %>%
             total_cells = n(),
             percent_positive = 100 * (n_cells_GFP_positive/ total_cells))
 
+```
+```{r}
+by_treatment <- get_metadata(so_tom, "egfp-sv40", embedding = NULL) %>% 
+    mutate(treatment = factor(treatment, levels = c("Saline", "Elastase"))) %>% 
+    filter(str_detect(harmony_cell_type_cluster, "AT2 |AT1 |Ciliated |Club |Goblet |Other Activated Club ")) %>% 
+    group_by(treatment, harmony_coarse_cell_type) %>% 
+    summarize(n_cells_GFP_positive = sum(`egfp-sv40` > 0), 
+              total_cells = n(),
+              percent_positive = 100 * (n_cells_GFP_positive/ total_cells)) %>% 
+  pivot_wider(names_from = treatment, 
+              values_from = c(n_cells_GFP_positive, 
+                              total_cells, 
+                              percent_positive)) %>% 
+  select(harmony_coarse_cell_type,
+         n_cells_GFP_positive_Saline,
+         total_cells_Saline,
+        percent_positive_Saline,
+        everything())
+by_treatment %>% 
+  write_csv("tmp.csv")
 ```
 
 ## Examine Ly6i/a expression

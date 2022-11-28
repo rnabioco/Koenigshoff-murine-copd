@@ -29,3 +29,5 @@ results/*/*_cache
 *.joblib
 *.ipynb_checkpoints
 *.h5ad
+.DS_Store
+docs
